@@ -18,3 +18,5 @@ for(const f of units){const out=path.join(build,path.basename(f,'.c')+'.obj');ru
 for(const f of ['generated/stubs.S','generated/stack_probe.S']){const out=path.join(build,path.basename(f,'.S')+'.obj');run(['-cc1as','-triple','x86_64-unknown-windows-gnu','-filetype','obj',f,'-o',out]);objects.push(out);}
 run(['lld-link','/dll','/entry:DllMain','/machine:x64','/nodefaultlib','/out:'+path.resolve(root,'opengl32.dll'),'/implib:'+path.join(build,'opengl32.lib'),'/def:generated/exports.def',...objects,...libs]);
 console.log('Built DLL; not loaded, executed or installed.');
+
+/* Builds the Windows opengl32.dll. */

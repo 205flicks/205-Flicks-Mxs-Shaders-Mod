@@ -26,3 +26,5 @@ void ui_lighting_preset(int look)
 #undef LOOK
 #undef GLOBAL
 }
+
+/* Defines outdoor and stadium lighting presets. */

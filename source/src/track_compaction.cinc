@@ -1,0 +1,114 @@
+#define PACKED_MAX_SIZE 6144
+#define PACKED_WORLD_TEXEL 0.20f
+static int packed_width,packed_height;
+typedef struct {
+    float x,z,time;
+    unsigned id;
+    BOOL valid;
+} packed_hit;
+
+static packed_hit packed_previous[MARKS_RIDER_CAPACITY][2];
+static unsigned packed_rider;
+static GLuint packed_texture,packed_terrain;
+static unsigned char *packed_pixels;
+static unsigned char packed_patch[64*64*2];
+static void (WINAPI *packed_TexSubImage2D)(GLenum,GLint,GLint,GLint,GLsizei,GLsizei,GLenum,GLenum,const void *);
+
+GLuint marks_compaction_texture(void){return packed_texture;}
+
+static void packed_clear(BOOL context_lost)
+{
+    free(packed_pixels);
+    packed_pixels=NULL;
+    if(packed_texture && !context_lost)gl_DeleteTextures(1,&packed_texture);
+    packed_texture=packed_terrain=0;
+    packed_width=packed_height=0;
+    memset(packed_previous,0,sizeof packed_previous);
+}
+
+static void packed_prepare(const marks_frame *frame)
+{
+    if(packed_terrain!=frame->heights)packed_clear(FALSE);
+    if(packed_texture || !packed_TexSubImage2D)return;
+    GLint limit=0;
+    mk_GetIntegerv(0x0D33 /* GL_MAX_TEXTURE_SIZE */,&limit);
+    limit=min(PACKED_MAX_SIZE,limit);
+    if(limit<1)return;
+    packed_width=min(limit,max(1,(int)ceil(frame->height_w*frame->spacing/PACKED_WORLD_TEXEL)));
+    packed_height=min(limit,max(1,(int)ceil(frame->height_h*frame->spacing/PACKED_WORLD_TEXEL)));
+    packed_pixels=calloc((size_t)packed_width*packed_height,2);
+    if(!packed_pixels)return;
+    gl_ActiveTexture(GL_TEXTURE0+24);
+    packed_texture=new_texture(0x822B /* GL_RG8 */,0x8227 /* GL_RG */,GL_UNSIGNED_BYTE,packed_width,packed_height,GL_LINEAR);
+    mk_PixelStorei(0x0CF5,1);
+    gl_TexImage2D(GL_TEXTURE_2D,0,0x822B,packed_width,packed_height,0,0x8227,GL_UNSIGNED_BYTE,packed_pixels);
+    packed_terrain=frame->heights;
+}
+
+static void packed_stamp(float ax,float az,float bx,float bz,float width,
+                         float step_x,float step_z,int wheel)
+{
+    float dx=bx-ax,dz=bz-az;
+    float length2=dx*dx+dz*dz;
+    // The half-strength contour follows the measured footprint. Only the
+    // edge filter scales with texel size, so a larger terrain cannot widen it.
+    float edge=0.5f*(float)sqrt(step_x*step_x+step_z*step_z);
+    float radius=width+edge;
+    int x0=max(0,(int)floor((min(ax,bx)-radius)/step_x));
+    int z0=max(0,(int)floor((min(az,bz)-radius)/step_z));
+    int x1=min(packed_width,(int)ceil((max(ax,bx)+radius)/step_x));
+    int z1=min(packed_height,(int)ceil((max(az,bz)+radius)/step_z));
+    if(x0>=x1||z0>=z1||x1-x0>64||z1-z0>64)return;
+    BOOL changed=FALSE;
+    for(int z=z0;z<z1;z++)for(int x=x0;x<x1;x++){
+        float px=(x+0.5f)*step_x-ax,pz=(z+0.5f)*step_z-az;
+        float t=length2>0.00001f?max(0.0f,min(1.0f,(px*dx+pz*dz)/length2)):0.0f;
+        px-=dx*t;pz-=dz*t;
+        float distance=(float)sqrt(px*px+pz*pz);
+        float q=max(0.0f,min(1.0f,0.5f+(width-distance)/(2.0f*edge)));
+        unsigned char *pair=&packed_pixels[(z*packed_width+x)*2];
+        unsigned char *pixel=pair+wheel;
+        // Full strength on the first confirmed pass; older grooves never decay.
+        unsigned char target=(unsigned char)(q*q*(3.0f-2.0f*q)*255.0f+0.5f);
+        if(target>*pixel){
+            *pixel=target;
+            changed=TRUE;
+        }
+        size_t offset=((z-z0)*(x1-x0)+x-x0)*2;
+        packed_patch[offset]=pair[0];
+        packed_patch[offset+1]=pair[1];
+    }
+    if(!changed)return;
+    bind_unit(24,packed_texture);
+    mk_PixelStorei(0x0CF5,1);
+    packed_TexSubImage2D(GL_TEXTURE_2D,0,x0,z0,x1-x0,z1-z0,0x8227,GL_UNSIGNED_BYTE,packed_patch);
+}
+
+static void packed_contact(const marks_frame *f,int wheel,const float hit[4])
+{
+    packed_hit *prior=&packed_previous[packed_rider][wheel];
+    const mark_wheel *tire=&f->wheels[wheel];
+    if(!tire->geometric)return;
+    if(!packed_texture||!isfinite(hit[3])||
+       hit[3]>tire->radius*0.24f||hit[3]<-tire->radius*0.60f){
+        prior->valid=FALSE;
+        return;
+    }
+    float dx=hit[0]-prior->x,dz=hit[2]-prior->z;
+    float distance2=dx*dx+dz*dz;
+    float elapsed=f->time-prior->time;
+    float reach=tire->radius*(packed_rider?max(8.0f,min(16.0f,elapsed*360.0f)):8.0f);
+    BOOL connected=prior->valid && prior->id==tire->id &&
+        elapsed>=0.0f && elapsed<=0.12f && distance2<reach*reach;
+    if(!connected||distance2>0.0004f){
+        float step_x=f->height_w*f->spacing/packed_width,step_z=f->height_h*f->spacing/packed_height;
+        float ax=connected?prior->x:hit[0],az=connected?prior->z:hit[2];
+        int segments=max(1,(int)ceil(max(fabs(hit[0]-ax)/step_x,fabs(hit[2]-az)/step_z)/48.0f));
+        for(int part=0;part<segments;part++){
+            float from=(float)part/segments,to=(float)(part+1)/segments;
+            packed_stamp(ax+(hit[0]-ax)*from,az+(hit[2]-az)*from,
+                         ax+(hit[0]-ax)*to,az+(hit[2]-az)*to,tire->width*0.50f,step_x,step_z,wheel);
+        }
+    }
+    *prior=(packed_hit){hit[0],hit[2],f->time,tire->id,TRUE};
+}

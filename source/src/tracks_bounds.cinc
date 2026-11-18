@@ -1,0 +1,101 @@
+/* Bounds of an indexed rigid draw, rather than every vertex in its VBO.
+ * Never reads process/game physics memory: only the GL buffers already drawing it.
+ */
+typedef struct {
+    GLuint vao,vbo,ibo,attr;GLint size,stride;GLenum vtype;const void *pointer;GLsizei count;GLenum type;const void *indices;
+    mesh_sphere shape;int valid;unsigned used;
+} track_bounds;
+static track_bounds tracks_bounds[512];
+static int tracks_bounds_count;
+static unsigned tracks_bounds_clock;
+static void tracks_geometry_changed(void){tracks_bounds_count=0;}
+static void tracks_vao_changed(GLuint vao)
+{
+    for(int i=0;i<tracks_bounds_count;)if(tracks_bounds[i].vao==vao)tracks_bounds[i]=tracks_bounds[--tracks_bounds_count];else i++;
+}
+static void tracks_buffer_changed(GLuint buffer)
+{
+    if(!buffer)return;
+    for(int i=0;i<tracks_bounds_count;)if(tracks_bounds[i].vbo==buffer||tracks_bounds[i].ibo==buffer)tracks_bounds[i]=tracks_bounds[--tracks_bounds_count];else i++;
+}
+static void tracks_layout_changed(GLuint attr,GLint size,GLenum type,GLsizei stride,const void *pointer)
+{
+    int actual_stride=stride?stride:size*(int)sizeof(float);
+    for(int i=0;i<tracks_bounds_count;i++){
+        const track_bounds *e=&tracks_bounds[i];
+        if(e->vao==g_cur_vao&&e->attr==attr&&(e->size!=size||e->vtype!=type||e->stride!=actual_stride||e->pointer!=pointer||e->vbo!=g_cur_vbo)){
+            tracks_vao_changed(g_cur_vao);return;
+        }
+    }
+}
+static const mesh_sphere *tracks_cached_bounds(GLuint vao,GLsizei count,GLenum type,const void *indices)
+{
+    int i;
+    for(i=0;i<tracks_bounds_count;i++)if(tracks_bounds[i].vao==vao&&tracks_bounds[i].count==count&&tracks_bounds[i].type==type&&tracks_bounds[i].indices==indices)
+        return tracks_bounds[i].valid?&tracks_bounds[i].shape:NULL;
+    return NULL;
+}
+static const mesh_sphere *tracks_draw_bounds(GLsizei count,GLenum type,const void *indices)
+{
+    GLint attr,size=0,vtype=0,stride=0,vbo=0,ibo=0,bytes=0,old_copy=0;
+    void *pointer=NULL;unsigned char *ix=NULL,*vertices=NULL;
+    size_t start=(size_t)indices,vertex_start,vertex_bytes,index_bytes,index_size;
+    unsigned low=~0u,high=0;float lo[3]={1e30f,1e30f,1e30f},hi[3]={-1e30f,-1e30f,-1e30f};
+    track_bounds *entry;int i,k;
+    for(i=0;i<tracks_bounds_count;i++)if(tracks_bounds[i].vao==g_cur_vao&&tracks_bounds[i].count==count&&tracks_bounds[i].type==type&&tracks_bounds[i].indices==indices){
+        tracks_bounds[i].used=++tracks_bounds_clock;
+        return tracks_bounds[i].valid?&tracks_bounds[i].shape:NULL;
+    }
+    if(count<=0||count>4000000||!my_glGetAttribLocation||!my_glGetBufferSubData||!my_glGetBufferParameteriv||!my_glGetVertexAttribiv||!my_glGetVertexAttribPointerv||!my_glBindBuffer)return NULL;
+    if(tracks_bounds_count>=512){
+        int oldest=0;for(i=1;i<512;i++)if(tracks_bounds[i].used<tracks_bounds[oldest].used)oldest=i;
+        tracks_bounds[oldest]=tracks_bounds[--tracks_bounds_count];
+    }
+    entry=&tracks_bounds[tracks_bounds_count++];memset(entry,0,sizeof *entry);
+    entry->used=++tracks_bounds_clock;
+    entry->vao=g_cur_vao;entry->count=count;entry->type=type;entry->indices=indices;
+    index_size=type==GL_UNSIGNED_INT?4:type==0x1403 /* UNSIGNED_SHORT */?2:type==GL_UNSIGNED_BYTE?1:0;
+    if(!index_size)return NULL;
+    attr=my_glGetAttribLocation(g_model_prog,"vattr_position");if(attr<0)return NULL;
+    my_glGetVertexAttribiv(attr,GL_VERTEX_ATTRIB_ARRAY_SIZE,&size);
+    my_glGetVertexAttribiv(attr,GL_VERTEX_ATTRIB_ARRAY_TYPE,&vtype);
+    my_glGetVertexAttribiv(attr,GL_VERTEX_ATTRIB_ARRAY_STRIDE,&stride);
+    my_glGetVertexAttribiv(attr,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&vbo);
+    my_glGetVertexAttribPointerv(attr,GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer);
+    my_glGetIntegerv(0x8895 /* ELEMENT_ARRAY_BUFFER_BINDING */,&ibo);
+    my_glGetIntegerv(GL_COPY_READ_BUFFER,&old_copy);
+    if(size<3||vtype!=GL_FLOAT||!vbo||!ibo)return NULL;
+    if(!stride)stride=size*(int)sizeof(float);
+    if(stride<12||stride>4096)return NULL;
+    entry->vbo=(GLuint)vbo;entry->ibo=(GLuint)ibo;entry->attr=(GLuint)attr;
+    entry->size=size;entry->vtype=(GLenum)vtype;entry->stride=stride;entry->pointer=pointer;
+    my_glBindBuffer(GL_COPY_READ_BUFFER,(GLuint)ibo);
+    my_glGetBufferParameteriv(GL_COPY_READ_BUFFER,GL_BUFFER_SIZE,&bytes);
+    index_bytes=(size_t)count*index_size;
+    if(bytes<=0||start>(size_t)bytes||index_bytes>(size_t)bytes-start)goto done;
+    ix=malloc(index_bytes);if(!ix)goto done;
+    my_glGetBufferSubData(GL_COPY_READ_BUFFER,(ptrdiff_t)start,(ptrdiff_t)index_bytes,ix);
+    for(i=0;i<count;i++){
+        unsigned v=0;memcpy(&v,ix+(size_t)i*index_size,index_size);
+        if(v<low)low=v;if(v>high)high=v;
+    }
+    my_glBindBuffer(GL_COPY_READ_BUFFER,(GLuint)vbo);
+    my_glGetBufferParameteriv(GL_COPY_READ_BUFFER,GL_BUFFER_SIZE,&bytes);
+    if(bytes<=0||(size_t)pointer>(size_t)bytes||high>((size_t)bytes-(size_t)pointer)/(size_t)stride)goto done;
+    vertex_start=(size_t)pointer+(size_t)low*stride;
+    vertex_bytes=((size_t)high-low)*stride+12;
+    if(vertex_start>(size_t)bytes||vertex_bytes>(size_t)bytes-vertex_start||vertex_bytes>128u*1024u*1024u)goto done;
+    vertices=malloc(vertex_bytes);if(!vertices)goto done;
+    my_glGetBufferSubData(GL_COPY_READ_BUFFER,(ptrdiff_t)vertex_start,(ptrdiff_t)vertex_bytes,vertices);
+    for(i=0;i<count;i++){
+        unsigned v=0;float p[3];memcpy(&v,ix+(size_t)i*index_size,index_size);
+        memcpy(p,vertices+((size_t)v-low)*stride,sizeof p);
+        for(k=0;k<3;k++){if(!isfinite(p[k]))goto done;lo[k]=min(lo[k],p[k]);hi[k]=max(hi[k],p[k]);}
+    }
+    for(k=0;k<3;k++)entry->shape.half[k]=(hi[k]-lo[k])*0.5f;
+    entry->shape.x=(lo[0]+hi[0])*0.5f;entry->shape.y=(lo[1]+hi[1])*0.5f;entry->shape.z=(lo[2]+hi[2])*0.5f;
+    entry->shape.radius=(float)sqrt(v_dot(entry->shape.half,entry->shape.half));entry->valid=1;
+done:
+    free(ix);free(vertices);my_glBindBuffer(GL_COPY_READ_BUFFER,(GLuint)old_copy);
+    return entry->valid?&entry->shape:NULL;
+}

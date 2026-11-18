@@ -1,0 +1,8 @@
+out vec3 flicks_dirt_position, flicks_dirt_normal;
+
+void main()
+{
+    game_main();
+    flicks_dirt_position = vattr_position;
+    flicks_dirt_normal = vattr_normal;
+}

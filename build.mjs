@@ -16,5 +16,5 @@ const objects=[];
 const units=['proxy','hooks','log','pack','post','ui','mxsr_runtime'].map(n=>'src/'+n+'.c').concat(['generated/real_table.c','generated/default_pack.c']);
 for(const f of units){const out=path.join(build,path.basename(f,'.c')+'.obj');run(['-cc1','-triple','x86_64-unknown-windows-gnu','-emit-obj','-O2','-std=c11','-fms-extensions','-fgnuc-version=4.2.1','-ferror-limit','10','-fno-builtin','-D__USE_MINGW_ANSI_STDIO=0','-D_CRT_SECURE_NO_WARNINGS','-Isrc','-isystem',path.join(lib,'include'),'-isystem',path.join(lib,'libc/include/any-windows-any'),f,'-o',out]);objects.push(out);}
 for(const f of ['generated/stubs.S','generated/stack_probe.S']){const out=path.join(build,path.basename(f,'.S')+'.obj');run(['-cc1as','-triple','x86_64-unknown-windows-gnu','-filetype','obj',f,'-o',out]);objects.push(out);}
-run(['lld-link','/dll','/entry:DllMain','/machine:x64','/nodefaultlib','/out:'+path.resolve(root,'../opengl32.dll'),'/implib:'+path.join(build,'opengl32.lib'),'/def:generated/exports.def',...objects,...libs]);
+run(['lld-link','/dll','/entry:DllMain','/machine:x64','/nodefaultlib','/out:'+path.resolve(root,'opengl32.dll'),'/implib:'+path.join(build,'opengl32.lib'),'/def:generated/exports.def',...objects,...libs]);
 console.log('Built DLL; not loaded, executed or installed.');

@@ -2,11 +2,11 @@
 
 Use Node.js and the official Zig 0.14.1 Windows x64 toolchain:
 
-    node source/build.mjs C:/path/to/zig.exe
+    node build.mjs C:/path/to/zig.exe
 
 The helper resolves its own source folder, compiles the explicit C/assembly list,
 creates import libraries from Windows system export tables, then links the DLL
-one directory above source/. It never installs, starts the game or loads the mod.
+at the repository root. It never installs, starts the game or loads the mod.
 It uses no uploaded batch file. Generated/default_pack.c is a byte embedding of
 shaderpacks/default/ and is included for inspection/rebuilding. If you edit GLSL,
 regenerate those byte arrays before rebuilding; otherwise the embedded copy stays old.

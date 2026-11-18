@@ -1,0 +1,213 @@
+#version 150
+
+in vec2 interp_texcoord;
+in vec2 interp_hcoord;
+in vec3 interp_viewer;
+in mat3 interp_modelview;
+
+uniform sampler2D u_tex, u_nmap, u_smap, u_heights;
+uniform float u_heights_dim_inv;
+uniform float u_spacing;
+uniform vec3 u_fog_color;
+uniform float u_fog_density;
+uniform vec3 u_light_position;
+uniform vec4 u_ambient;
+uniform vec3 u_diffuse;
+uniform vec3 u_specular_color;
+uniform float u_texscale;	/* set by the game for the vertex shader: texture per world unit */
+uniform int u_parallax;		/* the parallax setting in mxs-shaders.ini, as a percentage */
+
+out vec4 f_fragcolor;
+
+#include "common.glsl"
+// Original 205 Flicks material functions; GGX / Smith / Schlick approximation.
+// Environment is procedural sky radiance, not a reflection of hidden scenery.
+vec3 flicks_fresnel(float vh,vec3 f0){return f0+(1.0-f0)*pow(1.0-clamp(vh,0.0,1.0),5.0);}
+vec3 flicks_brdf(vec3 n,vec3 v,vec3 l,vec3 f0,float roughness)
+{
+    vec3 hv=v+l;
+    vec3 h=hv*inversesqrt(max(dot(hv,hv),1e-8));
+    float nv=max(dot(n,v),0.001),nl=max(dot(n,l),0.0),nh=max(dot(n,h),0.0),vh=max(dot(v,h),0.0);
+    float a=max(roughness*roughness,0.025),a2=a*a;
+    float denominator=nh*nh*(a2-1.0)+1.0;
+    float d=a2/(PI*denominator*denominator+1e-6);
+    float gv=2.0*nv/(nv+sqrt(a2+(1.0-a2)*nv*nv));
+    float gl=2.0*nl/(nl+sqrt(a2+(1.0-a2)*nl*nl));
+    return min(vec3(12.0),d*gv*gl*flicks_fresnel(vh,f0)/max(4.0*nv*nl,0.001));
+}
+
+
+
+
+float ground_height(float dx, float dz)
+{
+	return texture(u_heights, (interp_hcoord + 0.5 + vec2(dx, dz)) * u_heights_dim_inv).r;
+}
+
+/* Central differences half a height cell either side, with up as the y axis. */
+vec3 ground_normal()
+{
+	return normalize(vec3(ground_height(-0.5, 0.0) - ground_height(0.5, 0.0), u_spacing,
+			      ground_height(0.0, -0.5) - ground_height(0.0, 0.5)));
+}
+
+/* The normal map's axes follow world x and z, tilted to lie on the ground. */
+vec3 tilt_to_ground(vec3 n)
+{
+	vec3 up = ground_normal();
+	vec3 forward = normalize(vec3(0.0, -up.z, up.y));
+	vec3 side = cross(up, forward);
+
+	return side * n.x + up * n.y + forward * n.z;
+}
+
+/*
+ The game has no height data for ruts and dirt, only the colour and normal maps it
+ composites at runtime. Dark detail is usually low, so height comes from each
+ texel's brightness against a blurred copy, which ignores slow changes like the
+ edge between dirt and grass.
+*/
+const int PARALLAX_MIN_STEPS = 20, PARALLAX_MAX_STEPS = 56;	/* more at shallow angles, where steps show */
+const float PARALLAX_DEPTH = 0.1;	/* game units at full strength */
+const float PARALLAX_GAIN = 4.0;
+const float PARALLAX_MIN_SLANT = 0.4;	/* limits how far a shallow ray can slide */
+const float PARALLAX_BLUR_LOD = 4.0;	/* mip levels above the sampled one */
+const float PARALLAX_FADE_START = 8.0, PARALLAX_FADE_END = 30.0;
+
+float parallax_height(vec2 uv, float lod, float blurred)
+{
+	float l = dot(textureLod(u_tex, uv, lod).rgb, vec3(0.2126, 0.7152, 0.0722));
+
+	return clamp(0.5 + (l - blurred) * PARALLAX_GAIN, 0.0, 1.0);
+}
+
+vec2 parallax_coord()
+{
+    float amount = float(u_parallax) * 0.01 *
+		       (1.0 - smoothstep(PARALLAX_FADE_START, PARALLAX_FADE_END, length(interp_viewer)));
+	vec2 size = vec2(textureSize(u_tex, 0));
+	vec2 dx = dFdx(interp_texcoord) * size, dy = dFdy(interp_texcoord) * size;
+	float lod = max(0.5 * log2(min(dot(dx, dx), dot(dy, dy)) + 1e-6), 0.0) + 1.0;	/* smoother than the colour, or it terraces */
+	float layer, slant, depth, under, last_under, blurred;
+	vec3 view, ground;
+	vec2 step_uv, uv;
+	int i, steps;
+
+	if (amount <= 0.0)
+		return interp_texcoord;
+
+	/* Texture space is world x and z, so the view only has to be in world space. */
+	view = normalize(transpose(interp_modelview) * -interp_viewer);
+	ground = ground_normal();
+	slant = dot(view, ground);
+	steps = int(mix(float(PARALLAX_MAX_STEPS), float(PARALLAX_MIN_STEPS), clamp(slant, 0.0, 1.0)));
+	layer = 1.0 / float(steps);
+	step_uv = -view.xz / max(slant, PARALLAX_MIN_SLANT) * PARALLAX_DEPTH * amount * u_texscale * layer;
+
+	blurred = dot(textureLod(u_tex, interp_texcoord, lod + PARALLAX_BLUR_LOD).rgb, vec3(0.2126, 0.7152, 0.0722));
+
+	/* Walks down the ray until it is under the surface, then interpolates the hit. */
+	uv = interp_texcoord;
+	depth = 0.0;
+	under = -(1.0 - parallax_height(uv, lod, blurred));
+	for (i = 0; i < steps && under < 0.0; i++) {
+		last_under = under;
+		uv += step_uv;
+		depth += layer;
+		under = depth - (1.0 - parallax_height(uv, lod, blurred));
+	}
+	if (i == 0)
+		return uv;
+	return uv - step_uv * under / max(under - last_under, 1e-4) * step(0.0, under);
+}
+
+const float WET_DARKEN = 0.6;		/* damp soil, all over */
+const float PUDDLE_DARKEN = 0.45;	/* the bed under the water */
+const float PUDDLE_SHINE = 600.0;
+
+void main()
+{
+	vec4 nmap, s;
+	vec3 n, up, light, albedo, lit, ambient, world;
+	vec2 uv;
+	float ndl, len, power, water, snow;
+
+	if (u_shadow_pass != 0) {
+		f_fragcolor = vec4(0.0);
+		return;
+	}
+
+	light = normalize(u_light_position);
+	world = to_world(interp_viewer);
+	uv = parallax_coord();
+	/* Green holds a terrain shading term, the normal's y is rebuilt from x and z. */
+	nmap = textureGrad(u_nmap, uv, dFdx(interp_texcoord), dFdy(interp_texcoord));
+	len = nmap.y;
+	n = nmap.rgb * 2.0 - 1.0;
+	n.y = sqrt(max(1.0 - n.z * n.z - n.x * n.x, 0.0));
+    float normalStrength=flicks_value(u_205_normal,1.0);
+    n.xz*=normalStrength;
+    n.y=max(0.001,mix(1.0,n.y,clamp(normalStrength,0.0,1.0)));
+    n=normalize(n);
+    // Procedural micro slopes are attenuated by their pixel footprint.
+    vec2 phase=interp_texcoord*max(u_texscale,0.0001)*18.0;
+    vec2 footprint=fwidth(phase);
+    float micro=flicks_value(u_205_micro,0.0)*exp(-dot(footprint,footprint)*2.0);
+    n.xz+=vec2(sin(phase.x+sin(phase.y)),cos(phase.y+sin(phase.x)))*0.06*micro;
+    n = normalize(interp_modelview * tilt_to_ground(normalize(n)));
+	up = normalize(interp_modelview[1]);
+
+	vec2 dx = dFdx(interp_texcoord), dy = dFdy(interp_texcoord);
+	vec3 surface = textureGrad(u_tex, uv, dx, dy).rgb;
+	vec2 texSize = vec2(textureSize(u_tex, 0));
+	float texelFootprint = max(length(dx * texSize), length(dy * texSize));
+	// Stabilize minified green ground detail while retaining the close texture.
+	float grassFilter = smoothstep(0.015, 0.07, surface.g - max(surface.r, surface.b));
+	float minified = smoothstep(1.0, 3.0, texelFootprint);
+	if (grassFilter * minified > 0.0)
+		surface = mix(surface, textureGrad(u_tex, uv, dx * 1.7, dy * 1.7).rgb, grassFilter * minified);
+	albedo = to_linear(surface);
+
+	/* Snow and standing water both lie flat over the detail underneath. */
+	snow = snow_cover(world, dot(n, up));
+	water = u_wet > 0.0 ? puddle(world, ground_normal().y) * (1.0 - snow) : 0.0;	/* dry ground skips the height reads */
+	albedo *= mix(1.0, WET_DARKEN, u_wet * (1.0 - snow)) * mix(1.0, PUDDLE_DARKEN, water);
+	albedo = mix(albedo, SNOW_ALBEDO, snow);
+	n = normalize(mix(n, up, max(water, snow * 0.7)));
+
+	ndl = max(dot(n, light), 0.0) * sun_shadow(interp_viewer, n, 0.0) * cloud_shadow(interp_viewer, light);
+
+	/* Sky light falls off on surfaces facing away from the sky. */
+	ambient = sky_light(u_ambient.rgb) * (0.65 + 0.35 * dot(n, up));
+
+	lit = albedo * (ambient + to_linear(u_diffuse) * ndl * len * sun_boost());
+
+	s = textureGrad(u_smap, uv, dFdx(interp_texcoord), dFdy(interp_texcoord));
+
+    // Soil gets a dielectric, rough specular lobe. Green vegetation is restrained.
+    vec3 v=normalize(-interp_viewer);
+    float grass=clamp((albedo.g-max(albedo.r,albedo.b))*5.0,0.0,1.0);
+    float rough=flicks_value(u_205_roughness,0.65);
+    rough=mix(rough,0.92,grass);
+    rough=mix(rough,max(0.16,rough*0.45),u_wet*(1.0-snow));
+    float variance=dot(dFdx(n),dFdx(n))+dot(dFdy(n),dFdy(n));
+    rough=clamp(sqrt(rough*rough+min(variance*0.35,0.35)),0.15,1.0);
+    vec3 f0=vec3(mix(0.035,0.045,u_wet));
+    float material=flicks_value(u_205_material,1.0);
+    vec3 sunRadiance=to_linear(u_diffuse)*sun_boost();
+    vec3 spec=flicks_brdf(n,v,light,f0,rough);
+    float soilResponse=0.15*(1.0-0.75*grass)*(1.0-snow);
+    lit+=spec*sunRadiance*ndl*len*soilResponse*material;
+
+
+	/* Water mirrors the sky, most at a glancing look, and the sun as a sharp glint. */
+	if (water > 0.0) {
+		float f = fresnel(up, interp_viewer, 0.02) * water;
+
+		lit = mix(lit, sky_reflection(u_fog_color), f);
+		lit += to_linear(u_diffuse) * (1.0-smoothstep(0.45,1.0,u_night)) * ndl * specular(up, interp_viewer, light, PUDDLE_SHINE) * f;
+	}
+
+	lit+=albedo*flicks_moon_diffuse(n);
+	f_fragcolor = vec4(finish_color(lit, u_fog_color, u_fog_density), u_ambient.a);
+}

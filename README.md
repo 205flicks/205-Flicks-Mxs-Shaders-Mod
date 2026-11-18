@@ -10,7 +10,7 @@ A free graphics mod for the Windows version of MX Simulator.
 
 ## Online play
 
-The mod leaves `mx.exe` untouched. Wait for official approval from RaceFactory Gaming (RF) or JLV before using it online.
+The mod leaves `mx.exe` untouched. 205 Flicks MXS Shaders Mod has been approved by RaceFactory Gaming (RF). Check the official RF Discord to confirm which version is currently approved for racing.
 
 ## Installation
 
@@ -53,6 +53,3 @@ copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
 
-## RF approval
-
-205 Flicks MXS Shaders Mod has been approved by RaceFactory Gaming (RF). Check the official RF Discord to confirm which version is currently approved for racing.

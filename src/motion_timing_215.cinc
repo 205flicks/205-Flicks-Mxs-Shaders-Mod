@@ -14,3 +14,5 @@ static void matrix_column_major(float *out,const float *in,int transpose)
 {
     for(int row=0;row<4;row++)for(int col=0;col<4;col++)out[col*4+row]=transpose?in[row*4+col]:in[col*4+row];
 }
+
+/* Tracks frame timing for motion blur. */

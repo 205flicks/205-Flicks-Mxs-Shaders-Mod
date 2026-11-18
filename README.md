@@ -52,3 +52,7 @@ The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+
+## RF approval
+
+205 Flicks MXS Shaders Mod has been approved by RaceFactory Gaming (RF). Check the official RF Discord to confirm which version is currently approved for racing.

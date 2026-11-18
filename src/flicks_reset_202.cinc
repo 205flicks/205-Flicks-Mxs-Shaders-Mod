@@ -1,0 +1,25 @@
+/* One-time settings migration; writes only this mod's own settings. */
+static void flicks_reset_202_once(void)
+{
+    wchar_t path[MAX_PATH],backup[MAX_PATH],section[80],pack[64];
+    int i;BOOL ok=TRUE;
+    const wchar_t *keys[]={L"render_scale",L"msaa",L"anisotropy",L"material_light",L"ambient_light",L"ao_strength",L"ao_quality",L"ao_samples",L"motion_samples",L"shadow_size",L"shadows",L"post",L"enabled"};
+    const wchar_t *values[]={L"150",L"8",L"16",L"60",L"100",L"105",L"90",L"1",L"32",L"48",L"8192",L"1",L"1",L"1"};
+    const wchar_t *look_keys[]={L"fog",L"motion_blur",L"saturation",L"contrast",L"split_tone",L"texture_sharpness",L"bloom"};
+    const wchar_t *look_values[]={L"0",L"0",L"104",L"12",L"8",L"0",L"100"};
+    log_path(path,L"mxs-shaders.ini");
+    if(GetPrivateProfileIntW(L"205-flicks",L"profile_202",0,path))return;
+    log_path(backup,L"mxs-shaders.before-v202.ini");
+    CopyFileW(path,backup,TRUE); /* Preserve an existing snapshot; failure is nonfatal. */
+    GetPrivateProfileStringW(L"mxs-shaders",L"pack",L"default",pack,64,path);
+    if(!pack[0]||!_wcsicmp(pack,L"default"))wcscpy_s(section,80,L"mxs-shaders");
+    else swprintf_s(section,80,L"pack %s",pack);
+    for(i=0;i<(int)(sizeof keys/sizeof keys[0]);i++)
+        if(!WritePrivateProfileStringW(L"mxs-shaders",keys[i],values[i],path))ok=FALSE;
+    for(i=0;i<(int)(sizeof look_keys/sizeof look_keys[0]);i++)
+        if(!WritePrivateProfileStringW(section,look_keys[i],look_values[i],path))ok=FALSE;
+    // Mark earlier migrations complete so they do not overwrite these values.
+    if(!WritePrivateProfileStringW(L"205-flicks",L"profile_v2",L"1",path))ok=FALSE;
+    if(ok)WritePrivateProfileStringW(L"205-flicks",L"profile_202",L"1",path);
+    log_msg("205 Flicks v2.0.2: one-time default reset %s; later edits persist",ok?"complete":"incomplete");
+}

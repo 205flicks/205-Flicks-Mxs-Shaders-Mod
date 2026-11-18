@@ -1,0 +1,163 @@
+/* Wheel contact and surface sampling for tire coating and roost. */
+static GLuint mk_contact,mk_contact_tex,mk_contact_fb;
+static mark_wheel mk_previous_raw[2];
+static BOOL mk_have_previous;
+static float mk_last_batch;
+static void (WINAPI *mk_GetIntegerv)(GLenum,GLint*);
+static void (WINAPI *mk_GetFloatv)(GLenum,float*);
+static void (WINAPI *mk_GetBooleanv)(GLenum,GLboolean*);
+static void (WINAPI *mk_ClearColor)(float,float,float,float);
+static void (WINAPI *mk_Scissor)(GLint,GLint,GLsizei,GLsizei);
+static void (WINAPI *mk_ColorMask)(GLboolean,GLboolean,GLboolean,GLboolean);
+static void (WINAPI *mk_PixelStorei)(GLenum,GLint);
+static void (WINAPI *mk_BindBuffer)(GLenum,GLuint);
+static void (WINAPI *mk_BlendFuncSeparate)(GLenum,GLenum,GLenum,GLenum);
+static void (WINAPI *mk_BlendEquationSeparate)(GLenum,GLenum);
+static void (WINAPI *mk_Uniform4f)(GLint,float,float,float,float);
+static void (WINAPI *mk_ReadPixels)(GLint,GLint,GLsizei,GLsizei,GLenum,GLenum,void*);
+typedef struct {
+    GLint active,program,vao,draw,read,viewport[4],scissor[4],unpack,alignment,row_length,skip_x,skip_y;
+    GLint blend[6],binding22,binding23;float clear[4];GLboolean mask[4],enabled[5];
+} mark_gl_state;
+static void mk_capture(mark_gl_state *s)
+{
+    static const GLenum caps[5]={GL_BLEND,GL_DEPTH_TEST,GL_CULL_FACE,GL_SCISSOR_TEST,0x809E};int i;
+    mk_GetIntegerv(0x84E0,&s->active);mk_GetIntegerv(0x8B8D,&s->program);mk_GetIntegerv(0x85B5,&s->vao);
+    mk_GetIntegerv(0x8CA6,&s->draw);mk_GetIntegerv(0x8CAA,&s->read);mk_GetIntegerv(0x0BA2,s->viewport);mk_GetIntegerv(0x0C10,s->scissor);
+    mk_GetFloatv(0x0C22,s->clear);mk_GetBooleanv(0x0C23,s->mask);
+    mk_GetIntegerv(0x80C9,&s->blend[0]);mk_GetIntegerv(0x80C8,&s->blend[1]);mk_GetIntegerv(0x80CB,&s->blend[2]);mk_GetIntegerv(0x80CA,&s->blend[3]);
+    mk_GetIntegerv(0x8009,&s->blend[4]);mk_GetIntegerv(0x883D,&s->blend[5]);
+    mk_GetIntegerv(0x88EF,&s->unpack);mk_GetIntegerv(0x0CF5,&s->alignment);mk_GetIntegerv(0x0CF2,&s->row_length);mk_GetIntegerv(0x0CF4,&s->skip_x);mk_GetIntegerv(0x0CF3,&s->skip_y);
+    gl_ActiveTexture(GL_TEXTURE0+22);mk_GetIntegerv(0x8069,&s->binding22);gl_ActiveTexture(GL_TEXTURE0+23);mk_GetIntegerv(0x8069,&s->binding23);
+    for(i=0;i<5;i++){s->enabled[i]=gl_IsEnabled(caps[i]);gl_Disable(caps[i]);}
+    mk_ColorMask(1,1,1,1);mk_BindBuffer(0x88EC,0);mk_PixelStorei(0x0CF5,4);mk_PixelStorei(0x0CF2,0);mk_PixelStorei(0x0CF4,0);mk_PixelStorei(0x0CF3,0);
+    gl_BindVertexArray(g_vao);
+}
+static void mk_restore(const mark_gl_state *s)
+{
+    static const GLenum caps[5]={GL_BLEND,GL_DEPTH_TEST,GL_CULL_FACE,GL_SCISSOR_TEST,0x809E};int i;
+    gl_BindFramebuffer(GL_DRAW_FRAMEBUFFER,(GLuint)s->draw);gl_BindFramebuffer(GL_READ_FRAMEBUFFER,(GLuint)s->read);
+    gl_Viewport(s->viewport[0],s->viewport[1],s->viewport[2],s->viewport[3]);mk_Scissor(s->scissor[0],s->scissor[1],s->scissor[2],s->scissor[3]);
+    gl_UseProgram((GLuint)s->program);gl_BindVertexArray((GLuint)s->vao);mk_ClearColor(s->clear[0],s->clear[1],s->clear[2],s->clear[3]);
+    mk_ColorMask(s->mask[0],s->mask[1],s->mask[2],s->mask[3]);
+    mk_BlendFuncSeparate(s->blend[0],s->blend[1],s->blend[2],s->blend[3]);mk_BlendEquationSeparate(s->blend[4],s->blend[5]);
+    for(i=0;i<5;i++)if(s->enabled[i])gl_Enable(caps[i]);else gl_Disable(caps[i]);
+    bind_unit(22,(GLuint)s->binding22);bind_unit(23,(GLuint)s->binding23);gl_ActiveTexture((GLenum)s->active);
+    /* 20/21 are this module's reserved terrain samplers; bind only current names. */
+    mk_PixelStorei(0x0CF5,s->alignment);mk_PixelStorei(0x0CF2,s->row_length);mk_PixelStorei(0x0CF4,s->skip_x);mk_PixelStorei(0x0CF3,s->skip_y);mk_BindBuffer(0x88EC,(GLuint)s->unpack);
+}
+#include "surface_roost.cinc"
+static void marks_clear_histories(void);
+static BOOL marks_load(void)
+{
+#define CORE(v,n) *(FARPROC*)&v=GetProcAddress(g_real_gl,n)
+#define EXT(v,n) *(PROC*)&v=marks_get_proc(n)
+    CORE(mk_ReadPixels,"glReadPixels");
+    CORE(mk_GetIntegerv,"glGetIntegerv");CORE(mk_GetFloatv,"glGetFloatv");
+    CORE(mk_GetBooleanv,"glGetBooleanv");CORE(mk_ClearColor,"glClearColor");
+    CORE(mk_Scissor,"glScissor");CORE(mk_ColorMask,"glColorMask");
+    CORE(mk_PixelStorei,"glPixelStorei");
+    EXT(mk_BindBuffer,"glBindBuffer");EXT(mk_BlendFuncSeparate,"glBlendFuncSeparate");
+    EXT(mk_BlendEquationSeparate,"glBlendEquationSeparate");EXT(mk_Uniform4f,"glUniform4f");
+#undef CORE
+#undef EXT
+    if(!mk_BindBuffer||!mk_BlendEquationSeparate||!mk_BlendFuncSeparate||!mk_ReadPixels||!mk_Uniform4f)return FALSE;
+    GLuint probe=program("marks_contact.fsh");
+    if(!probe)return FALSE;
+    if(mk_contact)gl_DeleteProgram(mk_contact);
+    mk_contact=probe;
+    surface_load();
+    return TRUE;
+}
+void marks_lost(void)
+{
+    mk_contact=mk_contact_tex=mk_contact_fb=roost_program=0;
+    surface_clear();
+    marks_clear_histories();
+}
+void marks_clear(void){marks_clear_histories();}
+static void sample_wheel_contacts(const marks_frame *f)
+{
+    if(!f->wheels[0].geometric&&!f->wheels[1].geometric)return;
+    float result[16];GLint pack[6];
+    gl_BindFramebuffer(GL_FRAMEBUFFER,mk_contact_fb);gl_Viewport(0,0,2,2);gl_Disable(GL_SCISSOR_TEST);gl_Disable(GL_BLEND);
+    gl_UseProgram(mk_contact);bind_unit(22,f->heights);gl_Uniform1i(gl_GetUniformLocation(mk_contact,"u_heightmap"),22);
+    bind_unit(23,f->surface);
+    gl_Uniform1i(gl_GetUniformLocation(mk_contact,"u_soil"),23);
+    gl_Uniform1i(gl_GetUniformLocation(mk_contact,"u_sample_surface"),f->surface_enabled);
+    gl_Uniform1f(gl_GetUniformLocation(mk_contact,"u_soil_scale"),f->surface?f->texscale:0.0f);
+    gl_Uniform2f(gl_GetUniformLocation(mk_contact,"u_extent"),f->height_w*f->spacing,f->height_h*f->spacing);
+    gl_Uniform1f(gl_GetUniformLocation(mk_contact,"u_tolerance"),f->contact/100.0f);
+    for(int i=0;i<2;i++){
+        const mark_wheel *w=&f->wheels[i];
+        gl_Uniform3f(gl_GetUniformLocation(mk_contact,i?"u_bottom1":"u_bottom0"),w->bottom[0],w->bottom[1],w->bottom[2]);
+        mk_Uniform4f(gl_GetUniformLocation(mk_contact,i?"u_wheel1":"u_wheel0"),w->center[0],w->center[1],w->center[2],w->radius);
+        gl_Uniform3f(gl_GetUniformLocation(mk_contact,i?"u_axis1":"u_axis0"),w->axis[0],w->axis[1],w->axis[2]);
+    }
+    fullscreen();
+    static const GLenum keys[6]={0x88ED,0x0D05,0x0D02,0x0D04,0x0D03,0x0D00};
+    for(int k=0;k<6;k++)mk_GetIntegerv(keys[k],&pack[k]);
+    mk_BindBuffer(0x88EB,0);for(int k=1;k<6;k++)mk_PixelStorei(keys[k],k==1?1:0);
+    mk_ReadPixels(0,0,2,2,GL_RGBA,GL_FLOAT,result);
+    for(int k=1;k<6;k++)mk_PixelStorei(keys[k],pack[k]);mk_BindBuffer(0x88EB,(GLuint)pack[0]);
+    for(int i=0;i<2;i++)if(f->wheels[i].geometric){
+        float *hit=result+i*8;
+        float gap=hit[3];
+        BOOL contact=isfinite(gap)&&fabs(gap)<=f->wheels[i].radius*f->contact/100.0f;
+        if(contact&&f->surface_enabled&&mk_have_previous&&f->wheels[i].id==mk_previous_raw[i].id)
+            surface_emit(f,i,hit+4,mk_previous_raw[i].bottom,f->time-mk_last_batch);
+    }
+}
+void marks_submit(const marks_frame *f)
+{
+    if(!mk_contact||!g_ready||!f->surface_enabled||!f->valid||
+       !f->heights||f->height_w<=0||f->height_h<=0||f->spacing<=0){
+        mk_have_previous=FALSE;
+        return;
+    }
+    if(mk_have_previous&&f->time>=mk_last_batch&&f->time-mk_last_batch<f->interval)return;
+    mark_gl_state state;
+    mk_capture(&state);
+    if(!mk_contact_fb){
+        gl_ActiveTexture(GL_TEXTURE0+23);
+        mk_contact_tex=new_texture(0x8814,GL_RGBA,GL_FLOAT,2,2,GL_NEAREST);
+        mk_contact_fb=new_fbo(mk_contact_tex);
+        if(gl_CheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE){
+            gl_DeleteFramebuffers(1,&mk_contact_fb);gl_DeleteTextures(1,&mk_contact_tex);
+            mk_contact_fb=mk_contact_tex=0;
+            mk_restore(&state);
+            return;
+        }
+    }
+    sample_wheel_contacts(f);
+    memcpy(mk_previous_raw,f->wheels,sizeof mk_previous_raw);
+    mk_have_previous=TRUE;
+    mk_last_batch=f->time;
+    mk_restore(&state);
+}
+typedef struct {
+    mark_wheel raw[2];
+    BOOL valid;
+    float batch,soil[2][3],amount[2],emit;
+} marks_rider_history;
+static marks_rider_history rider_history[32];
+static unsigned active_rider;
+static void marks_clear_histories(void)
+{
+    memset(rider_history,0,sizeof rider_history);
+    mk_have_previous=FALSE;
+    memset(tire_amount,0,sizeof tire_amount);
+    roost_rider_last=0;
+}
+void marks_select_rider(unsigned rider)
+{
+    marks_rider_history *old=&rider_history[active_rider],*next=&rider_history[rider];
+    if(rider==active_rider)return;
+#define HISTORY(field,value) memcpy(old->field,value,sizeof old->field);memcpy(value,next->field,sizeof next->field)
+    HISTORY(raw,mk_previous_raw);
+    HISTORY(soil,tire_soil); HISTORY(amount,tire_amount);
+#undef HISTORY
+    old->valid=mk_have_previous;old->batch=mk_last_batch;old->emit=roost_rider_last;
+    mk_have_previous=next->valid;mk_last_batch=next->batch;roost_rider_last=next->emit;
+    active_rider=rider;
+}

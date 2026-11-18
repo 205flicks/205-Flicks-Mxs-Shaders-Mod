@@ -1,0 +1,14 @@
+/* Recover only the controls involved in the reported failure; preserve other edits. */
+static void flicks_recover_203_once(void)
+{
+    wchar_t path[MAX_PATH],pack[64],section[80];BOOL ok=TRUE;
+    log_path(path,L"mxs-shaders.ini");
+    if(GetPrivateProfileIntW(L"205-flicks",L"profile_203",0,path))return;
+    GetPrivateProfileStringW(L"mxs-shaders",L"pack",L"default",pack,64,path);
+    if(!pack[0]||!_wcsicmp(pack,L"default"))wcscpy_s(section,80,L"mxs-shaders");
+    else swprintf_s(section,80,L"pack %s",pack);
+    if(!WritePrivateProfileStringW(section,L"texture_sharpness",L"0",path))ok=FALSE;
+    if(GetPrivateProfileIntW(L"mxs-shaders",L"render_scale",150,path)>150)
+        if(!WritePrivateProfileStringW(L"mxs-shaders",L"render_scale",L"150",path))ok=FALSE;
+    if(ok)WritePrivateProfileStringW(L"205-flicks",L"profile_203",L"1",path);
+}

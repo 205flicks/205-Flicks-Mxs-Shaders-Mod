@@ -1,0 +1,32 @@
+/* 205 Flicks controls: ordinary GL uniforms and our settings file only. */
+static void quality_uniforms(GLuint p)
+{
+    if(!p||!my_glProgramUniform1f)return;
+#define Q(name,value) my_glProgramUniform1f(p,real_glGetUniformLocation(p,name),(float)(value))
+    Q("u_205_active",1);Q("u_205_moon",g_cfg_moon/100.0f);Q("u_205_stars",g_cfg_stars/100.0f);
+    Q("u_205_roughness",0.70f);Q("u_205_normal",1.0f);
+    Q("u_205_micro",0.20f);Q("u_205_reflection",0.60f);
+    Q("u_205_material",g_cfg_material_light/100.0f);Q("u_205_ambient",g_cfg_ambient/100.0f);
+    Q("u_205_bike_materials",g_cfg_bike_materials);
+#undef Q
+}
+void ui_quality_preset(int level)
+{
+    wchar_t path[MAX_PATH],text[32];
+    level=max(0,min(level,2));
+    log_path(path,L"mxs-shaders.ini");
+#define SET(var,key,v) do{var=(v);swprintf_s(text,32,L"%d",var);WritePrivateProfileStringW(L"mxs-shaders",L##key,text,path);}while(0)
+    SET(g_cfg_msaa,"msaa",level==2?2:level==0?4:8);
+    SET(g_cfg_aniso,"anisotropy",16);
+    SET(g_cfg_ao_samples,"ao_samples",level==2?12:level==0?16:32);
+    SET(g_cfg_ao_quality,"ao_quality",1);
+    if(level==0){
+        SET(g_cfg_shadow_size,"shadow_size",4096);
+        wchar_t section[80];
+        pack_section(section,80);
+        g_cfg_samples=8;
+        WritePrivateProfileStringW(section,L"motion_samples",L"8",path);
+    }
+#undef SET
+    log_msg("205 Flicks quality preset %d: MSAA and shadow size changes after restart",level);
+}

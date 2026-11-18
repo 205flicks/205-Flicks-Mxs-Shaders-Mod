@@ -112,3 +112,5 @@ static void packed_contact(const marks_frame *f,int wheel,const float hit[4])
     }
     *prior=(packed_hit){hit[0],hit[2],f->time,tire->id,TRUE};
 }
+
+/* Shapes tire grooves in the terrain. */

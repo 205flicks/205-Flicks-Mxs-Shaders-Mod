@@ -4,7 +4,7 @@ A free graphics mod for the Windows version of MX Simulator.
 
 <p align="center">
   <img align="top" src="https://i.imgur.com/4J9Bx5U_d.webp?maxwidth=760&amp;fidelity=grand" alt="205 Flicks MXS Shaders Mod"><br>
-  <a href="https://github.com/205flicks/205-Flicks-Mxs-Shaders-Mod/releases/tag/v2"><img align="top" src="https://i.imgur.com/gQ6fyGL_d.webp?maxwidth=760&amp;fidelity=grand" alt="Download V2"></a><br>
+  <a href="https://github.com/205flicks/205-Flicks-Mxs-Shaders-Mod/releases"><img align="top" src="https://i.imgur.com/gQ6fyGL_d.webp?maxwidth=760&amp;fidelity=grand" alt="Browse releases"></a><br>
   <a href="https://discord.com/invite/Nse9PDnfkM"><img align="top" src="https://i.imgur.com/0QQWuRk_d.webp?maxwidth=760&amp;fidelity=grand" alt="Join the 205 Flicks Discord"></a>
 </p>
 

@@ -18,3 +18,5 @@ loaded into the game.
 
 See the root VALIDATION.md. Standalone test hosts and build intermediates are not
 part of the normal runtime, and are excluded from this delivery.
+
+The build produces the Windows mod DLL, `opengl32.dll`.

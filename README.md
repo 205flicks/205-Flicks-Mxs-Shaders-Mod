@@ -31,7 +31,7 @@ The mod leaves `mx.exe` untouched. 205 Flicks MXS Shaders Mod has been approved 
 
 **Export Preset** and **Load Preset** open in the `205 Flicks MXS Shaders Mod Presets` folder beside `mx.exe`. You can also browse to another folder from either dialog.
 
-To restore the public graphics defaults, choose **Load Preset** and select `Balanced.205shaderspreset`. This preset keeps your current supersampling setting.
+To restore the public graphics defaults, choose **Load Preset** and select `Balanced.205shaderspreset`.
 
 ## Credits
 

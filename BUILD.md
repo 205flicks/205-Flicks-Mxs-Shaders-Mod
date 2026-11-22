@@ -1,22 +1,22 @@
-# Build the native personal v2 renderer
+# Build 205 Flicks MXS Shaders Mod V3 (public)
 
-Use Node.js and the official Zig 0.14.1 Windows x64 toolchain:
+Use Node.js and Zig 0.14.1 for Windows x64. From this source directory run:
 
     node build.mjs C:/path/to/zig.exe
 
-The helper resolves its own source folder, compiles the explicit C/assembly list,
-creates import libraries from Windows system export tables, then links the DLL
-at the repository root. It never installs, starts the game or loads the mod.
-It uses no uploaded batch file. Generated/default_pack.c is a byte embedding of
-shaderpacks/default/ and is included for inspection/rebuilding. If you edit GLSL,
-regenerate those byte arrays before rebuilding; otherwise the embedded copy stays old.
+The build helper uses its own directory, compiles the explicit C/assembly units,
+creates Windows import libraries from the system DLL export tables, and writes
+opengl32.dll one directory above this source folder. It does not load the result,
+install it, modify the game executable, or start MX Simulator.
 
-The logo header is a grayscale GPU texture prepared from the user's original JPEG
-in assets/, with only crop/resize for fitting; no replacement artwork was generated.
-The source asset and derived header are both included. No extra image decoder is
-loaded into the game.
+The generated/default_pack.c file embeds every shaderpacks/default file as bytes.
+It matches the supplied shader sources. If editing GLSL, regenerate that payload
+before rebuilding. The original logo asset and its derived header are included.
 
-See the root VALIDATION.md. Standalone test hosts and build intermediates are not
-part of the normal runtime, and are excluded from this delivery.
+The public edition uses standard JSC500 depth of field. Its first-launch settings
+are generated from the same Balanced values as the included Balanced preset.
+Saved settings are kept in %LOCALAPPDATA%/205 Flicks MXS Shaders V3, separately
+from the V2 editions. Existing V3 settings are preserved on later launches.
 
-The build produces the Windows mod DLL, `opengl32.dll`.
+See VALIDATION.md and LICENSE-NOTICES.txt. The user's release README is left
+unchanged in the install package and is not replaced by this source archive.

@@ -15,9 +15,24 @@ const float AMBIENT_BOOST = 3.2;
 const float SUN_BOOST = 1.7;
 const float SATURATION = 0.88;
 
+uniform int u_weather;
+const int WEATHER_CLEAR = 0, WEATHER_CLOUDY = 1, WEATHER_RAIN = 2, WEATHER_STORM = 3, WEATHER_SNOW = 4;
+
 float night_sky_amount(float night)
 {
+    if(u_weather==WEATHER_RAIN || u_weather==WEATHER_SNOW)return 0.0;
+    if(u_weather==WEATHER_STORM)return 1.0;
     return u_205_stadium>1.5?1.0:smoothstep(0.40,1.0,night);
+}
+
+/* Strip excess green from cyan sky/fog spill, preserving white and warm light.
+   This is only used on atmospheric colors, never on rider or track albedo. */
+vec3 sky_without_teal(vec3 color)
+{
+    float cyan=min(max(color.g-color.r,0.0),max(color.b-color.r,0.0));
+    float greenLimit=mix(color.r,color.b,0.55);
+    color.g-=min(max(color.g-greenLimit,0.0),cyan);
+    return color;
 }
 
 vec3 night_sky_color(float elevation)
@@ -282,7 +297,7 @@ vec3 apply_fog(vec3 c, vec3 fog_color, float density)
     float night=night_sky_amount(u_night);
     vec3 fixedFog=night_sky_color(0.0);
     if(u_hdr==0)fixedFog=to_gamma(tonemap(fixedFog));
-    return mix(mix(fog_color,fixedFog,night),c,min(exp(-density*z),1.0));
+    return mix(mix(sky_without_teal(fog_color),fixedFog,night),c,min(exp(-density*z),1.0));
 }
 
 /*
@@ -291,12 +306,13 @@ vec3 apply_fog(vec3 c, vec3 fog_color, float density)
 */
 uniform mat4 u_world_from_view;
 uniform float u_time;		/* seconds, for drifting clouds and falling rain */
-uniform int u_weather;
+
+uniform float u_snow_depth;
 uniform float u_weather_amount;	/* the Weather Strength setting, 1 at 100 */
-uniform float u_wet;		/* 0 dry to 1 soaked, from Wet Ground or the rain */
+uniform float u_wet;		/* 0 dry to 1 soaked, rain only */
 uniform sampler2D u_weather_noise;	/* four octaves of tiling value noise, made by the mod */
 
-const int WEATHER_CLEAR = 0, WEATHER_CLOUDY = 1, WEATHER_RAIN = 2, WEATHER_STORM = 3, WEATHER_SNOW = 4;
+
 const vec2 WIND = vec2(9.0, 4.0);	/* game units per second */
 const float CLOUD_HEIGHT = 1200.0;
 const float CLOUD_SIZE = 900.0;		/* across a typical cloud */
@@ -431,6 +447,8 @@ float snow_cover(vec3 world, float facing)
 /* The sky a puddle mirrors, close to the horizon's colour. */
 vec3 sky_reflection(vec3 fog_color)
 {
-	vec3 day=u_hdr!=0?scene_from_gamma(fog_color):to_linear(fog_color);
+    vec3 day=u_hdr!=0?scene_from_gamma(fog_color):to_linear(fog_color);
+    // Rain water reflects a dark overcast sky, not the track's often-white fog.
+    if(u_weather==WEATHER_RAIN)day=vec3(0.10,0.12,0.15);
     return mix(day,night_sky_color(0.05)*mix(0.5,1.0,clamp(u_205_moon,0.0,1.0)),night_sky_amount(u_night));
 }

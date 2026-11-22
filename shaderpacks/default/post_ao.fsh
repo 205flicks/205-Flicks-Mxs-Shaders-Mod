@@ -5,7 +5,7 @@
 in vec2 v_uv;
 out vec4 f_color;
 
-uniform sampler2D u_depth;
+uniform sampler2D u_depth,u_color;
 uniform vec2 u_texel;
 uniform float u_proj_a, u_proj_b, u_fx, u_fy;
 uniform vec3 u_sun;
@@ -47,6 +47,26 @@ vec3 view_normal(vec3 p)
  A short march toward the sun through the depth buffer. It picks up detail too
  small for the shadow maps, like tyres meeting the ground.
 */
+float surface_contact(vec3 p,vec3 n)
+{
+    if(u_contact_on==0 || -p.z>CONTACT_END || texture(u_color,v_uv).a>=1.99)return 1.0;
+    const vec2 offsets[8]=vec2[8](vec2(1,0),vec2(-1,0),vec2(0,1),vec2(0,-1),
+        vec2(.707,.707),vec2(-.707,.707),vec2(.707,-.707),vec2(-.707,-.707));
+    const float radius=0.32;
+    vec2 span=vec2(u_fx,u_fy)*0.5*radius/max(-p.z,0.1);
+    float sum=0.0;
+    for(int i=0;i<8;i++){
+        vec2 uv=v_uv+offsets[i]*span;
+        if(any(lessThanEqual(uv,vec2(0)))||any(greaterThanEqual(uv,vec2(1)))||texture(u_depth,uv).r>=1.0)continue;
+        vec3 v=view_pos(uv)-p;
+        float separation=length(v);
+        float height=max(dot(v,n)-0.015,0.0);
+        sum+=height/max(separation,0.02)*(1.0-smoothstep(radius*0.4,radius*1.7,separation));
+    }
+    float detail=min(0.50,sum*0.32);
+    return 1.0-detail*(1.0-smoothstep(22.0,CONTACT_END,-p.z));
+}
+
 float contact_shadow(vec3 p, vec3 n)
 {
 	const int STEPS = 24;
@@ -54,7 +74,9 @@ float contact_shadow(vec3 p, vec3 n)
 	float thickness = mix(0.26,0.5,smoothstep(14.0,38.0,dist)) + dist * 0.012;
 	float bias = 0.025 + dist * 0.005;	/* above the depth buffer's stairs on flat ground */
 	vec3 sun=normalize(u_sun);
-    if(u_contact_on==0 || dist>CONTACT_END || u_night>=1.0)return 1.0;
+    if(u_contact_on==0 || dist>CONTACT_END)return 1.0;
+    float crease=surface_contact(p,n);
+    if(u_night>=1.0)return crease;
     float local=0.0;
     if(u_contact_rider_valid!=0){
         vec3 offset=p-u_contact_rider;
@@ -79,8 +101,9 @@ float contact_shadow(vec3 p, vec3 n)
         supported=max(supported,pair);
         previous=hit;
     }
-    return 1.0-min(1.0,supported*mix(1.12,1.28,local))*
+    float directional=1.0-min(1.0,supported*mix(1.12,1.28,local))*
         (1.0-smoothstep(CONTACT_END*0.6,CONTACT_END,dist))*(1.0-u_night);
+    return min(crease,directional);
 }
 
 void main()

@@ -4,6 +4,8 @@ in vec2 interp_texcoord;
 in vec2 interp_hcoord;
 in vec3 interp_viewer;
 in mat3 interp_modelview;
+in float interp_snow_height;
+uniform mat4 u_projection;
 
 uniform sampler2D u_tex, u_nmap, u_smap, u_heights;
 uniform float u_heights_dim_inv;
@@ -22,6 +24,7 @@ uniform sampler2D u_205_track_packed;
 out vec4 f_fragcolor;
 
 #include "common.glsl"
+#include "snow_surface.glsl"
 // Original 205 Flicks material functions; GGX / Smith / Schlick approximation.
 // Environment is procedural sky radiance, not a reflection of hidden scenery.
 vec3 flicks_fresnel(float vh,vec3 f0){return f0+(1.0-f0)*pow(1.0-clamp(vh,0.0,1.0),5.0);}
@@ -112,8 +115,37 @@ const float WET_DARKEN = 0.6;		/* damp soil, all over */
 const float PUDDLE_DARKEN = 0.45;	/* the bed under the water */
 const float PUDDLE_SHINE = 600.0;
 
+float snow_trench_surface(vec2 uv,float facing)
+{
+    vec2 cell=uv*vec2(textureSize(u_heights,0));
+    float ground=textureLod(u_heights,uv+0.5*u_heights_dim_inv,0.0).r;
+    vec2 wheels=textureLod(u_205_track_packed,uv,0.0).rg;
+    float clear=smoothstep(0.08,0.56,max(wheels.r,wheels.g));
+    float layer=u_snow_depth*snow_surface_cover(cell*u_spacing,facing)*(1.0-clear);
+    return ground+layer-dot(wheels,TIRE_GROOVE_DEPTH);
+}
+
+float snow_trench_relief(vec3 origin,vec3 ray,vec2 uv,vec2 extent,float facing)
+{
+    float previous=origin.y-snow_trench_surface(uv,facing);
+    if(previous<=0.001)return 0.0;
+    float maximum=min(8.0,(u_snow_depth+0.32)/max(-ray.y,0.05));
+    vec2 stepUV=ray.xz/extent;
+    float priorTravel=0.0;
+    for(int i=1;i<=10;i++){
+        float travel=maximum*float(i)/10.0;
+        float gap=origin.y+ray.y*travel-snow_trench_surface(uv+stepUV*travel,facing);
+        if(gap<=0.0)return mix(priorTravel,travel,previous/max(previous-gap,0.0001));
+        previous=gap;priorTravel=travel;
+    }
+    return 0.0;
+}
+
 void main()
 {
+#ifdef FLICKS_SNOW_DEPTH_WRITE
+    gl_FragDepth=gl_FragCoord.z;
+#endif
 	vec4 nmap, s;
 	vec3 n, up, light, albedo, lit, ambient, world;
 	vec2 uv;
@@ -132,13 +164,24 @@ void main()
     vec2 groundUV=interp_hcoord/terrainCells;
     vec2 dx=dFdx(interp_texcoord),dy=dFdy(interp_texcoord);
     float grooveDepth=u_205_track_packed_on>0.5 ? tire_depth(groundUV) : 0.0;
+    bool deepSnow=u_weather==WEATHER_SNOW && u_snow_depth>0.0;
     if(grooveDepth>0.004){
         vec2 extent=max(terrainCells*u_spacing,vec2(0.1));
         vec3 viewRay=normalize(interp_viewer);
         vec3 worldRay=normalize(transpose(interp_modelview)*viewRay);
-        float travel=tire_relief(groundUV,extent,worldRay,ground_normal(),grooveDepth);
+        float travel=deepSnow?snow_trench_relief(world,worldRay,groundUV,extent,ground_normal().y):
+                             tire_relief(groundUV,extent,worldRay,ground_normal(),grooveDepth);
         if(travel>0.0){
             shadedPosition+=viewRay*travel;
+            if(deepSnow){
+                groundUV+=worldRay.xz*travel/extent;
+                uv+=worldRay.xz*travel*u_texscale;
+                world+=worldRay*travel;
+                vec4 clip=u_projection*vec4(shadedPosition,1.0);
+#ifdef FLICKS_SNOW_DEPTH_WRITE
+                if(abs(clip.w)>0.0001)gl_FragDepth=clamp(clip.z/clip.w*0.5+0.5,0.0,1.0);
+#endif
+            }
         }
     }
 	/* Green holds a terrain shading term, the normal's y is rebuilt from x and z. */
@@ -187,7 +230,18 @@ void main()
     }
 
 	/* Snow and standing water both lie flat over the detail underneath. */
-	snow = snow_cover(world, dot(n, up));
+    snow=snow_cover(world,dot(n,up))*(1.0-snow_track_clear(groundUV));
+    if(deepSnow && u_205_track_packed_on>0.5 && grooveDepth>0.0){
+        vec2 texel=1.0/vec2(textureSize(u_205_track_packed,0));
+        float facing=ground_normal().y;
+        float left=snow_surface_displacement((groundUV-vec2(texel.x,0.0))*terrainCells,facing);
+        float right=snow_surface_displacement((groundUV+vec2(texel.x,0.0))*terrainCells,facing);
+        float back=snow_surface_displacement((groundUV-vec2(0.0,texel.y))*terrainCells,facing);
+        float ahead=snow_surface_displacement((groundUV+vec2(0.0,texel.y))*terrainCells,facing);
+        vec2 step=terrainCells*u_spacing*texel;
+        vec2 slope=vec2(left-right,back-ahead)/max(2.0*step,vec2(0.03));
+        n=normalize(n+interp_modelview*vec3(slope.x,0.0,slope.y));
+    }
 	water = u_wet > 0.0 ? puddle(world, ground_normal().y) * (1.0 - snow) : 0.0;	/* dry ground skips the height reads */
 	albedo *= mix(1.0, WET_DARKEN, u_wet * (1.0 - snow)) * mix(1.0, PUDDLE_DARKEN, water);
 	albedo = mix(albedo, SNOW_ALBEDO, snow);

@@ -17,7 +17,7 @@ uniform vec2 u_205_roof_clip;
 uniform float u_205_bike_materials;
 uniform float u_205_rigid_rider,u_205_tire_coat;
 uniform vec3 u_205_tire_soil,u_205_tire_center;
-uniform float u_205_tire_radius,u_205_body_dirt;
+uniform float u_205_tire_radius,u_205_body_dirt,u_205_helmet;
 uniform vec3 u_205_body_soil;
 uniform sampler2DShadow u_static_shadow;
 uniform int u_static_shadow_on;
@@ -83,6 +83,25 @@ float filtered_leaf_alpha(vec2 uv, float alpha, float footprint, inout vec3 colo
         color = mix(color, covered / filtered, fade);
     }
     return mix(alpha, filtered, fade);
+}
+
+// Bind-pose coordinates keep the dirt pattern attached during animation.
+float rider_dirt_exposure(vec3 normal,vec3 position,bool skinned,bool helmet)
+{
+    float front=smoothstep(0.08,0.85,-normal.z);
+    float underside=smoothstep(0.18,0.86,-normal.y);
+    float rear=smoothstep(0.0,0.60,normal.z);
+    if(helmet){
+        // Small side splashes fade to exactly zero on the back and rear underside.
+        float frontHalf=1.0-smoothstep(-0.03,0.02,normal.z);
+        float side=0.035*(1.0-abs(normal.y));
+        return (0.95*front+side)*frontHalf;
+    }
+    if(skinned)return (0.13+0.82*front+0.19*underside)*(1.0-0.97*rear);
+    float forwardPart=smoothstep(0.12,1.05,-position.z);
+    float frontFender=forwardPart*smoothstep(0.12,0.82,normal.y);
+    return (0.13+max(0.97*front,1.20*underside)+0.48*frontFender)
+        *(1.0-0.87*rear*(1.0-underside));
 }
 
 void main()
@@ -182,19 +201,8 @@ void main()
         float grain=mix(0.5,smoothstep(0.18,0.81,patch),detail);
         // JM coordinates are Y up and Z back. Bind-pose normals keep the mask on the mesh.
         vec3 localNormal=flicks_dirt_normal*inversesqrt(max(dot(flicks_dirt_normal,flicks_dirt_normal),0.0001));
-        float front=smoothstep(0.08,0.85,-localNormal.z);
-        float underside=smoothstep(0.18,0.86,-localNormal.y);
-        float rear=smoothstep(0.0,0.60,localNormal.z);
-        float exposure;
-        if(u_nbones!=0){
-            exposure=(0.13+0.82*front+0.19*underside)*(1.0-0.97*rear);
-        }else{
-            // Catch splash on the top of the front fender as well as underneath it.
-            float forwardPart=smoothstep(0.12,1.05,-flicks_dirt_position.z);
-            float frontFender=forwardPart*smoothstep(0.12,0.82,localNormal.y);
-            exposure=(0.13+max(0.97*front,1.12*underside)+0.44*frontFender)
-                     *(1.0-0.87*rear*(1.0-underside));
-        }
+        float exposure=rider_dirt_exposure(localNormal,flicks_dirt_position,
+                                            u_nbones!=0,u_205_helmet>0.5);
         float amount=min(0.79,u_205_body_dirt*(0.12+0.28*grain)*exposure);
         amount*=1.0-smoothstep(0.0,0.15,u_205_tire_coat)*0.85;
         albedo=mix(albedo,to_linear(u_205_body_soil),amount);

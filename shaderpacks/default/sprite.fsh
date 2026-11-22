@@ -15,10 +15,13 @@ uniform mat4 u_projection;
 uniform int u_sprite_mode;	/* 0 normal, 1 sky, 2 particle */
 uniform vec3 u_sun_view;
 uniform vec3 u_screen;
+uniform vec3 u_sky_sun;
+uniform int u_sky_look;
 
 out vec4 f_fragcolor;
 
 #include "common.glsl"
+#include "sky_backdrop.glsl"
 
 const vec3 SUN_GLOW = vec3(1.0, 0.86, 0.66);
 const float PARTICLE_SHADE = 0.55;
@@ -34,13 +37,17 @@ void main()
 {
 	vec4 color = interp_color * texture(u_tex, interp_texcoord);
 
-    float night=night_sky_amount(u_night);
-    if(u_sprite_mode==1 && night>0.0 && u_screen.x>0.0 && u_screen.y>0.0){
-        float elevation=to_world_dir(view_ray()).y;
-        vec3 sky=night_sky_color(elevation);
+    if(u_sprite_mode==1 && replacement_sky_active(u_sky_look) && u_screen.x>0.0 && u_screen.y>0.0){
+        vec3 ray=view_ray(),dir=to_world_dir(ray);
+        if(dot(dir,dir)<0.0001)dir=ray;
+        dir=normalize(dir);
+        float night=night_sky_amount(u_night);
+        vec3 viewSun=dot(u_sky_sun,u_sky_sun)>0.0001?u_sky_sun:u_sun_view;
+        vec3 day=day_sky_backdrop(dir,sky_sun_world(viewSun),u_sky_look);
+        vec3 sky=mix(day,night_sky_color(dir.y),night);
+        // Identical early replacement path for day and night; no stock-sky tint enters MSAA.
         if(u_hdr==0)sky=to_gamma(tonemap(sky));
-        else color.rgb=scene_from_gamma(color.rgb);
-        f_fragcolor=vec4(mix(color.rgb,sky,night),color.a);
+        f_fragcolor=vec4(sky,color.a);
         return;
     }
 

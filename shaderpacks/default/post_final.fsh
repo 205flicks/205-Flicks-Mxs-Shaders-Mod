@@ -5,7 +5,7 @@
 in vec2 v_uv;
 out vec4 f_color;
 
-uniform sampler2D u_color, u_ao, u_bloom, u_depth, u_shafts;
+uniform sampler2D u_color, u_ao, u_depth, u_shafts;
 uniform int u_205_shafts_on;
 uniform vec2 u_shadow_projection_offset;
 uniform float u_shadow_darkness;
@@ -14,15 +14,15 @@ uniform int u_rider_shadow_on,u_shadow_debug;
 uniform float u_proj_a, u_proj_b, u_fx, u_fy;
 uniform float u_camera_height;	/* above the ground around the rider */
 uniform float u_fog_amount;	/* the fog setting in mxs-shaders.ini, 1 at 100 */
-uniform float u_bloom_amount;	/* the settings, 1 at 100 */
 uniform vec3 u_up, u_sun, u_fog_color;
+uniform vec3 u_sky_sun;
+uniform int u_sky_look;
 
 #include "common.glsl"
 
 uniform float u_ao_strength,u_contact_strength;
 #define AO_STRENGTH (0.85*u_ao_strength)
 
-const float BLOOM_STRENGTH = 0.12;
 
 
 /* Haze per game unit at ground level, thinning by e every FOG_HEIGHT units. */
@@ -118,7 +118,7 @@ float lightning(out float slot)
 	float t;
 
 	slot = floor(u_time / LIGHTNING_EVERY);
-	if (u_weather != WEATHER_STORM || weather_hash(vec2(slot, 1.7)) > 0.25 + 0.6 * u_weather_amount)
+	if ((u_weather != WEATHER_RAIN && u_weather != WEATHER_STORM) || u_weather_amount<=0.0 || weather_hash(vec2(slot, 1.7)) > 0.25 + 0.6 * u_weather_amount)
 		return 0.0;
 	t = u_time - slot * LIGHTNING_EVERY - weather_hash(vec2(slot, 4.3)) * (LIGHTNING_EVERY - 1.0);
 	if (t < 0.0 || t > 1.0)
@@ -139,86 +139,36 @@ float lightning_bolt(vec3 dir, float slot)
 	return smoothstep(0.0045, 0.0015, abs(a)) + smoothstep(0.05, 0.0, abs(a)) * 0.15;
 }
 
-/* The sky behind the scene: clouds, the overcast of bad weather, and at night stars and a moon. */
-vec3 weather_sky(vec3 c, vec3 dir, float flash, float slot)
+#include "sky_backdrop.glsl"
+#include "sky_detail.glsl"
+
+vec3 weather_sky(vec3 c,vec3 dir,float flash,float slot)
 {
-	float l = dot(c, vec3(0.2126, 0.7152, 0.0722)), gloom = weather_gloom(), density = 0.0;
-	float skyNight=u_205_stadium>1.5?1.0:u_night;
-	float night = smoothstep(0.5, 0.9, skyNight) * smoothstep(0.0, 0.08, dir.y);
-	vec3 camera = to_world(vec3(0.0));
-
-	if (dir.y > 0.0)
-		density = cloud_density(camera.xz + dir.xz / max(dir.y, 0.02) * (CLOUD_HEIGHT - camera.y)) * smoothstep(0.0, 0.12, dir.y);
-    if(u_205_stadium>0.5 && u_205_stadium<1.5){
-        float elevation=smoothstep(0.0,0.85,max(dir.y,0.0));
-        float toward=max(dot(dir,normalize(to_world_dir(u_sun))),0.0);
-        vec3 daylight=mix(vec3(0.61,0.77,0.96),vec3(0.19,0.43,0.82),elevation);
-        daylight+=vec3(0.29,0.13,0.038)*pow(toward,12.0);
-        daylight=mix(daylight,vec3(0.84,0.87,0.93),density*0.72);
-        daylight+=vec3(4.0,2.8,1.6)*smoothstep(0.99957,0.99990,toward)*(1.0-0.8*density);
-        return daylight;
-    }
-	c = mix(c, vec3(l) * mix(1.15, 0.4, gloom), density * 0.9);
-	c = mix(c, vec3(l) * mix(1.0, 0.55, gloom), gloom * 0.5);
-    float dark=smoothstep(0.4,1.0,skyNight);
-    vec3 nightSky=night_sky_color(dir.y);
-    c=mix(c,nightSky*(1.0-0.5*density),dark);
-
-	if (night > 0.0) {
-		vec2 a = vec2(atan(dir.z, dir.x), asin(clamp(dir.y, -1.0, 1.0))) * STAR_GRID;
-		vec2 cell = floor(a);
-		vec2 f = fract(a) - 0.5 - (vec2(weather_hash(cell + 5.0), weather_hash(cell + 9.0)) - 0.5) * 0.6;
-		float h = weather_hash(cell), star, moon, angle = acos(clamp(dot(dir, MOON_DIR), -1.0, 1.0));
-
-		star = step(1.0 - STAR_DENSITY*3.0, h) * (1.0-smoothstep(0.0,0.25,length(f))) * (0.4 + 0.6 * fract(h * 997.0));
-		moon = (1.0 - smoothstep(MOON_RADIUS * 0.9, MOON_RADIUS, angle)) * (0.75 + 0.25 * weather_fbm(dir.xz * 400.0)) * MOON_BRIGHT;
-		moon += exp(-angle / 0.08) * 0.15;
-		c += (vec3(star * STAR_BRIGHT * max(u_205_stars,0.0)) + vec3(0.85, 0.9, 1.0) * moon * max(u_205_moon,0.0)) * night * (1.0 - density);
-	}
-
-	if (flash > 0.0)
-		c += vec3(0.8, 0.85, 1.0) * lightning_bolt(dir, slot) * flash * 20.0;
-	return c;
+    return detailed_sky(c,dir,flash,slot);
 }
 
-/* Falling rain or snow in layers at set distances, each hidden by anything nearer. */
-vec3 precipitation(vec3 c, vec3 dir, float dist, float flash)
+#include "snowfall.glsl"
+
+/* Keep the existing rain treatment; snow has its own periodic particle field. */
+vec3 precipitation(vec3 c,vec3 dir,float dist,float flash)
 {
-	const float layer_dist[3] = float[3](3.0, 7.0, 16.0);
-	bool snow = u_weather == WEATHER_SNOW;
-	vec2 cell_size = snow ? vec2(0.5) : vec2(0.3, 2.0);
-	float around = atan(dir.z, dir.x), rise = dir.y / max(length(dir.xz), 0.05), amount = 0.0;
-	int i;
-
-	if (u_weather < WEATHER_RAIN || u_weather_amount <= 0.0)
-		return c;
-	for (i = 0; i < 3 && dist > layer_dist[i]; i++) {
-		/* A cylinder around the camera, so drops are the same size in game units at each layer. */
-		vec2 p = vec2(around, rise) * layer_dist[i], cell, f;
-		float x, drop;
-
-		if (snow) {
-			p.y += u_time * SNOW_SPEED;
-			p.x += sin(u_time * 0.9 + p.y * 0.8) * 0.25;
-		} else {
-			p.y += u_time * RAIN_SPEED;
-			p.x += p.y * RAIN_SLANT;
-		}
-		p.y += float(i) * 37.0;
-		cell = floor(p / cell_size);
-		f = fract(p / cell_size);
-		if (weather_hash(cell + float(i) * 13.0) > u_weather_amount * (snow ? 0.5 : 0.35))
-			continue;
-		x = 0.2 + 0.6 * weather_hash(cell + 2.7);
-		if (snow)
-			drop = smoothstep(0.24, 0.1, length(f - vec2(x, 0.5)));
-		else
-			drop = smoothstep(0.06, 0.0, abs(f.x - x)) * smoothstep(0.0, 0.15, f.y) * smoothstep(0.55, 0.3, f.y);
-		amount += drop / (1.0 + float(i) * 0.6);
-	}
-	if (snow)
-		return mix(c, SNOW_FLAKE * (1.0 - 0.8 * u_night), min(amount, 1.0) * 0.85);
-	return c + RAIN_LIGHT * amount * (1.0 + flash * 4.0);
+    if(u_weather==WEATHER_SNOW)return snowfall(c,dir,dist);
+    if(u_weather<WEATHER_RAIN || u_weather_amount<=0.0)return c;
+    const float layer_dist[3]=float[3](3.0,7.0,16.0);
+    const vec2 cell_size=vec2(0.3,2.0);
+    float around=atan(dir.z,dir.x),rise=dir.y/max(length(dir.xz),0.05),amount=0.0;
+    for(int i=0;i<3 && dist>layer_dist[i];i++){
+        vec2 p=vec2(around,rise)*layer_dist[i];
+        p.y+=u_time*RAIN_SPEED;
+        p.x+=p.y*RAIN_SLANT;
+        p.y+=float(i)*37.0;
+        vec2 cell=floor(p/cell_size),f=fract(p/cell_size);
+        if(weather_hash(cell+float(i)*13.0)>u_weather_amount*0.35)continue;
+        float x=0.2+0.6*weather_hash(cell+2.7);
+        float drop=smoothstep(0.06,0.0,abs(f.x-x))*smoothstep(0.0,0.15,f.y)*smoothstep(0.55,0.3,f.y);
+        amount+=drop/(1.0+float(i)*0.6);
+    }
+    return c+RAIN_LIGHT*amount*(1.0+flash*4.0);
 }
 
 vec3 atmosphere(vec3 c)
@@ -248,41 +198,49 @@ vec3 atmosphere(vec3 c)
 	return c + SUN_SCATTER * shafts.r * shafts.g * (SHAFT_AMBIENT + sun) * SHAFT_STRENGTH * (1.0 - u_night) * clouds;
 }
 
-/* MSAA resolves color and depth separately. A geometry pixel at the
-   silhouette can retain color from the stock sky even with bloom off. */
-vec3 clean_night_edge(vec3 color, float depth, out bool skyBoundary)
+/* Replaced skies can leave original sky color in resolved silhouette pixels. */
+float sky_edge_protection()
+{
+    // The original Track Default/Clear sky does not get a replacement or cleanup.
+    return replacement_sky_active(u_sky_look)?1.0:0.0;
+}
+
+vec3 clean_sky_edge(vec3 color,float depth,out bool skyBoundary)
 {
     skyBoundary=false;
-    float night=night_sky_amount(u_night);
-    if(night<0.15)return color;
+    float protection=sky_edge_protection();
+    if(protection<0.15 || depth>=1.0)return color;
     ivec2 size=textureSize(u_depth,0);
     ivec2 at=clamp(ivec2(v_uv*vec2(size)),ivec2(0),size-1);
     const ivec2 offsets[8]=ivec2[8](ivec2(1,0),ivec2(-1,0),ivec2(0,1),ivec2(0,-1),
         ivec2(1,1),ivec2(-1,1),ivec2(1,-1),ivec2(-1,-1));
+    for(int i=0;i<8;i++){
+        ivec2 tap=clamp(at+offsets[i],ivec2(0),size-1);
+        if(texelFetch(u_depth,tap,0).r>=1.0)skyBoundary=true;
+    }
+    if(!skyBoundary)return color;
     vec3 reference=vec3(0.0);
     float darkest=1e9;
     const vec3 luma=vec3(0.2126,0.7152,0.0722);
-    for (int i=0;i<8;i++) {
+    for(int i=0;i<8;i++){
         ivec2 tap=clamp(at+offsets[i],ivec2(0),size-1);
-        float other=texelFetch(u_depth,tap,0).r;
-        if ((other>=1.0)!=(depth>=1.0)) skyBoundary=true;
-        if (other<1.0) {
+        if(texelFetch(u_depth,tap,0).r<1.0){
             vec3 candidate=texelFetch(u_color,tap,0).rgb;
             float light=dot(candidate,luma);
-            if(light<darkest){
-                darkest=light;
-                reference=candidate;
-            }
+            if(light<darkest){darkest=light;reference=candidate;}
         }
     }
-    if(depth>=1.0)return color;
-    if(!skyBoundary || darkest==1e9)return color;
-    // Resolved color can contain bright daytime sky samples even when depth
-    // classifies the pixel as terrain. Catch neutral white as well as cyan.
+    if(darkest==1e9)return color;
     float excess=dot(color-reference,luma);
     float chroma=max(color.b-reference.b,color.g-reference.g);
     float leak=max(smoothstep(0.012,0.045,excess),smoothstep(0.018,0.065,chroma));
-    return mix(color,min(color,reference+vec3(0.004)),night*leak);
+    if(night_sky_amount(u_night)<0.15){
+        // Use the night cleanup strength, retaining neutral white snow and gear.
+        float peak=max(color.r,max(color.g,color.b)),low=min(color.r,min(color.g,color.b));
+        float neutral=1.0-smoothstep(0.08,0.24,(peak-low)/max(peak,0.001));
+        leak*=1.0-neutral;
+    }
+    return mix(color,min(color,reference+vec3(0.004)),protection*leak);
 }
 
 void main()
@@ -300,9 +258,9 @@ void main()
 	bool skyBoundary;
     if (u_noise_reduction > 0.0 && depth < 1.0)
         c = reduce_noise(c,u_proj_b/(depth*2.0-1.0+u_proj_a));
-    if (u_edge_smoothing != 0 && u_night < 0.55)
+    if (u_edge_smoothing != 0)
         c = smooth_edges(c);
-	c=clean_night_edge(c,depth,skyBoundary);
+	c=clean_sky_edge(c,depth,skyBoundary);
     if (depth >= 1.0 || scene.a < 1.99) {
         c *= pow(max(occlusion.r,0.001),AO_STRENGTH);
         c *= mix(1.0,occlusion.g,clamp(u_contact_strength,0.0,1.0));
@@ -345,11 +303,7 @@ void main()
 	c = atmosphere(c);
 	c = precipitation(c, dir, dist, flash);
 	c *= 1.0 + flash * LIGHTNING_BRIGHT;
-	if (u_bloom_amount > 0.0) {
-        float night=night_sky_amount(u_night);
-        float bloomWeight=(depth>=1.0 || skyBoundary)?1.0-night:1.0-0.60*night*step(u_205_stadium,0.5);
-        c += texture(u_bloom, v_uv).rgb * BLOOM_STRENGTH * u_bloom_amount * bloomWeight;
-    }
+
 
 	f_color = vec4(c, 1.0);
 }

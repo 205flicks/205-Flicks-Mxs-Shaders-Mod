@@ -1,0 +1,16 @@
+uniform int u_weather;
+uniform float u_weather_amount,u_snow_depth,u_205_track_packed_on;
+uniform sampler2D u_weather_noise,u_205_track_packed;
+out float interp_snow_height;
+#include "snow_surface.glsl"
+void main()
+{
+    game_main();
+    interp_snow_height=0.0;
+    if(u_weather==4 && u_snow_depth>0.0){
+        interp_snow_height=snow_surface_displacement(interp_hcoord,snow_ground_normal(interp_hcoord).y);
+        vec3 offset=interp_modelview*vec3(0.0,interp_snow_height,0.0);
+        interp_viewer+=offset;
+        gl_Position+=u_projection*vec4(offset,0.0);
+    }
+}

@@ -14,6 +14,7 @@ typedef struct {
 	int w, h;
 	const float *projection;
 	const float *sun_view;
+    float sky_sun[3];
 	const float *view_up;		/* world up in view space */
 	const float *fog_color;		/* the game's, gamma encoded */
 	const float *shadow_near_matrix;
@@ -29,7 +30,6 @@ typedef struct {
 	int ao_quality,ao_samples;
 	int lighting_look;
 	float dof, saturation, contrast, split_tone;	/* the same for these */
-	float bloom;
 	int edge_smoothing;
 	float noise_reduction;
 	const float *world_from_view;	/* this frame's camera, for weather fixed to the track */

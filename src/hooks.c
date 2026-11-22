@@ -152,9 +152,10 @@ enum { SPRITE_NORMAL, SPRITE_SKY, SPRITE_PARTICLE };
 static GLuint g_sprite_prog;
 static int g_sprite_mode = -1, g_sprite_phase;
 static BOOL g_particle_phase;
-static GLint g_loc_body_dirt[MAX_IDS],g_loc_body_soil[MAX_IDS];
+static GLint g_loc_body_dirt[MAX_IDS],g_loc_body_soil[MAX_IDS],g_loc_helmet[MAX_IDS];
 static GLint g_loc_rigid_receiver[MAX_IDS],g_loc_tire_coat[MAX_IDS],g_loc_tire_soil[MAX_IDS],g_loc_tire_center[MAX_IDS],g_loc_tire_radius[MAX_IDS];
 static GLint g_loc_sprite_mode[MAX_IDS], g_loc_sun_view[MAX_IDS], g_loc_screen[MAX_IDS], g_loc_hdr[MAX_IDS];
+static GLint g_loc_sky_look[MAX_IDS],g_loc_sky_sun[MAX_IDS];
 static GLuint g_reflection_prog;
 static int g_hdr_on;
 
@@ -201,7 +202,7 @@ static GLint g_loc_proj[MAX_IDS], g_loc_mv[MAX_IDS], g_loc_light[MAX_IDS];
 static GLint g_loc_static_shadow[MAX_IDS],g_loc_static_shadow_on[MAX_IDS];
 static GLint g_loc_shadow_matrix[MAX_IDS], g_loc_shadow_map[MAX_IDS], g_loc_shadow_on[MAX_IDS], g_loc_night[MAX_IDS];
 static GLint g_loc_world_from_view[MAX_IDS], g_loc_time[MAX_IDS], g_loc_weather[MAX_IDS], g_loc_weather_amount[MAX_IDS], g_loc_wet[MAX_IDS];
-static GLint g_loc_weather_noise[MAX_IDS];
+static GLint g_loc_weather_noise[MAX_IDS],g_loc_snow_depth[MAX_IDS];
 static GLint g_loc_shadow_pass[MAX_IDS], g_loc_view_up[MAX_IDS],g_loc_roof_clip[MAX_IDS];
 static GLint g_loc_shadow_near_matrix[MAX_IDS], g_loc_shadow_near_map[MAX_IDS], g_loc_nbones[MAX_IDS];
 static GLint g_cur_nbones;
@@ -294,8 +295,9 @@ static BOOL g_cursor_hidden;
 static BOOL g_reload_requested, g_enabled_changed;	/* from the panel, done at the frame boundary */
 static int g_cfg_fog, g_cfg_dof, g_cfg_saturation, g_cfg_contrast, g_cfg_split_tone;
 static int g_cfg_hide_hud, g_cfg_hide_cursor, g_cfg_time_of_day, g_cfg_ui_key, g_cfg_enabled;
-static int g_cfg_texture_sharpness, g_cfg_bloom, g_cfg_sun_height, g_cfg_sun_turn;
-static int g_cfg_weather, g_cfg_weather_amount, g_cfg_wet;
+static int g_cfg_texture_sharpness, g_cfg_sun_height, g_cfg_sun_turn;
+static int g_cfg_weather, g_cfg_weather_amount, g_cfg_snow_depth;
+enum { WEATHER_CLEAR, WEATHER_CLOUDY, WEATHER_RAIN, WEATHER_STORM, WEATHER_SNOW };
 static float g_weather_time;	/* seconds since the first frame, for drifting clouds and falling rain */
 
 typedef void (WINAPI *glGenObjects_t)(GLsizei, GLuint *);
@@ -531,6 +533,7 @@ static void texture_filter_apply(void);
 static float lod_bias_wanted(void);
 static void program_refresh(GLuint program);
 static void sprite_set_mode(int mode);
+static void sky_sprite_apply(void);
 static void hdr_set(int on);
 static void terrain_frame_end(void);
 static void terrain_fill_prepare(void);
@@ -649,6 +652,7 @@ static void frame_boundary(const char *source)
 	if (g_reload_requested)
 		hot_reload();
 	g_reload_requested = FALSE;
+    sky_sprite_apply();
 
 	ui_key = focused && (GetAsyncKeyState(g_cfg_ui_key) & 0x8000) != 0;
 	if ((ui_key && !g_ui_key_down && !ui_is_reading_key()) || (ui_is_open() && !focused))
@@ -767,8 +771,9 @@ static BOOL v_normalize(float *v)
 
 static BOOL moon_shadows(void)
 {
-    return !stadium_enabled() && g_cfg_time_of_day>=FULL_NIGHT &&
-        (g_cfg_lighting_look==6 || g_cfg_lighting_look==7);
+    if(stadium_enabled() || g_cfg_weather==WEATHER_RAIN || g_cfg_weather==WEATHER_SNOW)return FALSE;
+    return g_cfg_weather==WEATHER_STORM || (g_cfg_time_of_day>=FULL_NIGHT &&
+        (g_cfg_lighting_look==6 || g_cfg_lighting_look==7));
 }
 
 static BOOL sun_moved(void)
@@ -780,25 +785,24 @@ static BOOL sun_moved(void)
  The game's sun in view space, turned and raised by the Sun Turn and Sun Height
  settings. They act on its world direction, so the camera turning doesn't move it.
 */
-static void sun_effective(float *out, const float *in, const float *inv_view)
+static void sun_for_settings(float *out,const float *in,const float *inv_view,int heightDegrees,int turnDegrees,BOOL stadium,BOOL moon)
 {
-	float w[3], len = (float)sqrt(v_dot(in, in)), turn = g_cfg_sun_turn * RADIANS;
+	float w[3], len = (float)sqrt(v_dot(in, in)), turn = turnDegrees * RADIANS;
 	float x, flat, height, side, fallback[3];
 	int i;
 
-    BOOL moon=moon_shadows();
-    if(stadium_enabled() || moon || len<1e-6f){
+    if(stadium || moon || len<1e-6f){
         const float overhead[3]={0.22f,0.96f,0.17f};
         const float day[3]={-0.79f,0.48f,0.38f};
         const float night[3]={0.48f,0.77f,-0.42f};
         // Match the visible moon in the shader's world-space sky.
         const float moon_direction[3]={-0.45f,0.50f,-0.74f};
-        const float *direction=stadium_enabled()?(stadium_night()?night:day):moon?moon_direction:overhead;
+        const float *direction=stadium?(stadium_night()?night:day):moon?moon_direction:overhead;
         for(int axis=0;axis<3;axis++)fallback[axis]=v_dot(inv_view+axis*4,direction);
         in=fallback;
         len=(float)sqrt(v_dot(in,in));
     }
-	if (stadium_enabled() || moon || !sun_moved()) {
+	if (stadium || moon || !(heightDegrees>0 || turnDegrees%360!=0)) {
 		memcpy(out, in, 3 * sizeof *out);
 		return;
 	}
@@ -807,9 +811,9 @@ static void sun_effective(float *out, const float *in, const float *inv_view)
 	x = w[0] * (float)cos(turn) - w[2] * (float)sin(turn);
 	w[2] = w[0] * (float)sin(turn) + w[2] * (float)cos(turn);
 	w[0] = x;
-	if (g_cfg_sun_height > 0) {
+	if (heightDegrees > 0) {
 		/* Whether the game's vector runs toward the sun or away, it stays on that side. */
-		height = max(g_cfg_sun_height, SUN_MIN_HEIGHT) * RADIANS;
+		height = max(heightDegrees, SUN_MIN_HEIGHT) * RADIANS;
 		side = w[1] < 0.0f ? -1.0f : 1.0f;
 		flat = (float)sqrt(w[0] * w[0] + w[2] * w[2]);
 		if (flat < 1e-4f) {
@@ -823,6 +827,11 @@ static void sun_effective(float *out, const float *in, const float *inv_view)
 	/* Back to view space with the transposed rotation. */
 	for (i = 0; i < 3; i++)
 		out[i] = inv_view[i * 4 + 0] * w[0] + inv_view[i * 4 + 1] * w[1] + inv_view[i * 4 + 2] * w[2];
+}
+
+static void sun_effective(float *out,const float *in,const float *inv_view)
+{
+    sun_for_settings(out,in,inv_view,g_cfg_sun_height,g_cfg_sun_turn,stadium_enabled(),moon_shadows());
 }
 
 /* Orthographic sun view around the area in front of the camera. */
@@ -893,9 +902,9 @@ static BOOL build_light_matrix(float *m, const float *inv_view, float range, int
  10-16 and the panel's font at 17.
 */
 #define WEATHER_NOISE_UNIT 18
-#define WEATHER_NOISE_SIZE 256
+#define WEATHER_NOISE_SIZE 2048
 #define WEATHER_NOISE_CELLS 8	/* lowest octave's cells across, match NOISE_CELLS in common.glsl */
-#define WEATHER_NOISE_LEVELS 7	/* down to 4x4, below that rows would need unpack padding */
+#define WEATHER_NOISE_LEVELS 10	/* down to 4x4, below that rows would need unpack padding */
 
 static GLuint g_weather_noise;
 
@@ -1125,7 +1134,13 @@ static void sprite_set_mode(int mode)
 	my_glProgramUniform1i(g_sprite_prog, g_loc_sprite_mode[g_sprite_prog], mode);
 }
 
-static int active_time_of_day(void){return stadium_enabled()?0:g_cfg_time_of_day;}
+static int active_time_of_day(void)
+{
+    if(stadium_enabled())return 0;
+    if(g_cfg_weather==WEATHER_STORM)return FULL_NIGHT;
+    if(g_cfg_weather==WEATHER_RAIN || g_cfg_weather==WEATHER_SNOW)return 0;
+    return stadium_enabled()?0:g_cfg_time_of_day;
+}
 
 static BOOL directional_shadows(void){return active_time_of_day()<FULL_NIGHT || moon_shadows();}
 
@@ -1149,18 +1164,13 @@ static void time_of_day_apply(void)
 	}
 }
 
-enum { WEATHER_CLEAR, WEATHER_CLOUDY, WEATHER_RAIN, WEATHER_STORM, WEATHER_SNOW };
 
-/* Rain soaks the ground by itself, Wet Ground adds puddles to any weather but snow. */
+
+/* Rain is the only source of mod-added ground wetness. */
 static float weather_wet(void)
 {
-	float wet = g_cfg_wet / 100.0f;
-
-	if (g_cfg_weather == WEATHER_SNOW)
-		return 0.0f;
-	if (g_cfg_weather == WEATHER_RAIN || g_cfg_weather == WEATHER_STORM)
-		wet = max(wet, g_cfg_weather_amount / 100.0f);
-	return min(wet, 1.0f);
+    if(g_cfg_weather!=WEATHER_RAIN && g_cfg_weather!=WEATHER_STORM)return 0.0f;
+    return max(0.0f,min(g_cfg_weather_amount/100.0f,1.0f));
 }
 
 /* Sent every frame with the camera, so everything agrees where the clouds and puddles are. */
@@ -1200,9 +1210,26 @@ static void weather_apply(const float *inv_view)
 			my_glProgramUniform1f(p, g_loc_weather_amount[p], g_cfg_weather_amount / 100.0f);
 		if (g_loc_wet[p] >= 0)
 			my_glProgramUniform1f(p, g_loc_wet[p], weather_wet());
+		my_glProgramUniform1f(p,g_loc_snow_depth[p],g_cfg_snow_depth*0.02f);
 		if (g_loc_weather_noise[p] >= 0)
 			my_glProgramUniform1i(p, g_loc_weather_noise[p], WEATHER_NOISE_UNIT);
 	}
+}
+
+/* Set the replacement background before the next sky draw, including after preset reloads. */
+static void sky_sprite_apply(void)
+{
+    GLuint p=g_sprite_prog;
+    if(!p || !my_glProgramUniform1i || !my_glProgramUniform3fv)return;
+    quality_uniforms(p);
+    my_glProgramUniform1i(p,g_loc_sky_look[p],stadium_enabled()?(stadium_night()?6:4):g_cfg_lighting_look);
+    my_glProgramUniform1f(p,g_loc_night[p],active_time_of_day()/100.0f);
+    my_glProgramUniform1i(p,g_loc_weather[p],g_cfg_weather);
+    my_glProgramUniform1f(p,g_loc_weather_amount[p],g_cfg_weather_amount/100.0f);
+    float skySun[3];memcpy(skySun,g_light_view,sizeof skySun);
+    if(g_have_prev_cam && stadium_enabled() && !stadium_night())
+        sun_for_settings(skySun,g_light_game,g_prev_inv_view,8,270,FALSE,FALSE);
+    my_glProgramUniform3fv(p,g_loc_sky_sun[p],1,skySun);
 }
 
 static void shadow_set_receiver(GLuint prog, const float *far_matrix, const float *near_matrix)
@@ -1277,6 +1304,7 @@ static void shadow_frame_start(const float *view)
             my_glProgramUniform3fv(p,g_loc_light[p],1,g_light_view);
     }
 	weather_apply(inv_view);
+    sky_sprite_apply();
 
 	/* The rider stays near the ground, so slowly following them finds it on any track. */
 	memcpy(g_view_up, view + 4, sizeof g_view_up);
@@ -2153,12 +2181,12 @@ static void rigid_receiver_hint(GLsizei count,GLenum type,const void *indices)
         BOOL actor=g_cur_nbones!=0||rigid;
         float body=g_cfg_enabled&&g_cfg_actor_dirt&&g_cur_fb==0&&actor
             ?g_cfg_dirt_amount/100.0f:0.0f;
-        if(body>0.0f){
-            const rigid_draw *helmet=&g_rigid_after[0];
-            BOOL helmet_draw=!g_cur_nbones && coat<=0.0f && g_rigid_after_n>0 &&
-                helmet->vao==g_cur_vao && rigid_is_near(helmet->mv);
-            body*=g_cur_nbones ? 1.18f : helmet_draw ? 0.15f : 1.65f;
-        }
+        const rigid_draw *helmet=&g_rigid_after[0];
+        BOOL helmet_draw=!g_cur_nbones && coat<=0.0f && g_rigid_after_n>0 &&
+            helmet->vao==g_cur_vao && helmet->count==count && helmet->type==type &&
+            helmet->indices==indices && rigid_is_near(helmet->mv);
+        my_glProgramUniform1f(g_cur_prog,g_loc_helmet[g_cur_prog],helmet_draw?1.0f:0.0f);
+        if(body>0.0f)body*=g_cur_nbones ? 1.18f : helmet_draw ? 0.15f : 1.65f;
         my_glProgramUniform1f(g_cur_prog,g_loc_body_dirt[g_cur_prog],body);
         if(body>0.0f && my_glProgramUniform3fv){
             float tint[3];
@@ -2621,8 +2649,10 @@ static void resolve_to_window(void)
 		real_glEnable(GL_SCISSOR_TEST);
 }
 
-static void run_scene_post(void)
+static void run_post_stage(void)
 {
+    /* Multiple end-of-scene signals must never grade/shadow/blur a frame twice. */
+    if(g_post_done)return;
 	static const float default_fog[3] = { 0.8f, 0.85f, 0.9f };
 	uni_entry *fog = model_uniform("u_fog_color");
  post_state s;
@@ -2635,7 +2665,11 @@ static void run_scene_post(void)
 	s.w = g_fbo_w;
 	s.h = g_fbo_h;
 	s.projection = g_proj_value[g_terrain_prog];
-	s.sun_view = g_light_view;
+    s.sun_view = g_light_view;
+    memcpy(s.sky_sun,g_light_view,sizeof s.sky_sun);
+    if(stadium_enabled() && !stadium_night()){
+        sun_for_settings(s.sky_sun,g_light_game,g_prev_inv_view,8,270,FALSE,FALSE);
+    }
 	s.view_up = g_view_up;
 	s.fog_color = fog && fog->data ? fog->data : default_fog;
 	s.shadow_matrix = g_shadow_receiver_valid ? g_shadow_receiver : NULL;
@@ -2644,7 +2678,7 @@ static void run_scene_post(void)
     s.shadow_debug=g_cfg_shadow_debug;
     s.shadow_near_matrix = g_shadow_receiver_valid ? g_shadow_receiver_near : NULL;
 	s.camera_height = g_camera_y - g_ground_y;
-	s.fog_amount = stadium_enabled()?(stadium_night()?0.06f:0.12f):g_cfg_fog / 100.0f;
+	s.fog_amount = g_cfg_fog / 100.0f;
     s.dof = g_cfg_dof / 100.0f;
 	s.saturation = g_cfg_saturation / 100.0f;
 	s.contrast = g_cfg_contrast / 100.0f;
@@ -2652,7 +2686,6 @@ static void run_scene_post(void)
     s.lighting_look=stadium_enabled()?(stadium_night()?6:4):g_cfg_lighting_look;
 	s.ao_amount=g_cfg_ao*0.0035f;s.contact_amount=g_cfg_contact*0.005f;
 	s.ao_quality=g_cfg_ao_quality;s.ao_samples=g_cfg_ao_samples;
-	s.bloom = g_cfg_bloom / 100.0f;
 	s.world_from_view = g_prev_inv_view;	/* already this frame's, set when the terrain started */
 	s.time = g_weather_time;
 	s.weather = g_cfg_weather;
@@ -2710,7 +2743,14 @@ static void draw_scene_roost(void)
     surface_draw(view,g_proj_value[g_terrain_prog],g_weather_time,g_depth_mask,surface_flags(),g_cfg_roost_amount/100.0f);
     g_roost_drawn=TRUE;
 }
-static void run_post(void) { run_scene_post(); draw_scene_roost(); }
+static void run_post(void) { run_post_stage(); draw_scene_roost(); }
+
+
+
+/* Cull state also changes for transparent scenery. It is not an end-of-world
+   marker. Process the finished 3D image immediately before an orthographic
+   sprite draw, or at presentation if the game draws no such overlay. */
+
 
 /*
  The game's fullscreen changes the display mode, which blanks the monitor and
@@ -2749,9 +2789,13 @@ static void present(HDC dc)
         log_msg("shadow debug: frame=%d scene=%d riders=%d overflow=%d arena_filter=%d scene_draws=%u rider_draws=%u shell_skips=%u",
             (int)g_shadow_frame,(int)g_shadow_receiver_valid,(int)g_local_shadow_drawn,(int)g_rec_overflow,
             (int)stadium_enabled(),g_shadow_scene_draws,g_shadow_rider_draws,g_shadow_shell_skips);
+    if(g_frame%600==0)
+        log_msg("render profile: lighting=%d stadium=%d weather=%d sun_height=%d scene_shadow_draws=%u rider_shadow_draws=%u",
+            g_cfg_lighting_look,g_cfg_stadium_preset,g_cfg_weather,g_cfg_sun_height,g_shadow_scene_draws,g_shadow_rider_draws);
     g_shadow_scene_draws=g_shadow_rider_draws=g_shadow_shell_skips=0;
 
-    draw_scene_roost();
+
+	draw_scene_roost();
 	if (g_fbo) {
 		resolve_to_window();
 		bind_current_fb();
@@ -2796,8 +2840,6 @@ static void present(HDC dc)
 
 static const int g_shadow_sizes[] = { 1024, 2048, 4096, 8192 };
 static const char *const g_shadow_names[] = { "Low", "Medium", "High", "Ultra" };
-static const int g_shadow_debug_modes[]={0,1,2};
-static const char *const g_shadow_debug_names[]={"Off","Scene Map","Rider Map"};
 static const int g_ao_sample_options[]={12,16,20,24,28,32};
 static const int g_blur_samples[]={6,8,12};
 static const char *const g_blur_sample_names[]={"Low (6)","Medium (8)","High (12)"};
@@ -2806,7 +2848,7 @@ static const char *const g_ao_names[]={"Off","Half resolution","Full resolution"
 static const int g_msaa_levels[] = { 0, 2, 4, 8 };
 static const int g_aniso_levels[] = { 1, 2, 4, 8, 16 };
 static const int g_weather_kinds[] = { WEATHER_CLEAR, WEATHER_CLOUDY, WEATHER_RAIN, WEATHER_STORM, WEATHER_SNOW };
-static const char *const g_weather_names[] = { "Clear", "Cloudy", "Rain", "Storm", "Snow" };
+static const char *const g_weather_names[] = { "Clear", "Cloudy", "Daytime Rain", "Nighttime Rain", "Snow" };
 
 #define SLIDER(tab, label, key, var, lo, hi, step) { label, key, UI_SLIDER, &var, lo, hi, step, NULL, 0, FALSE, NULL, tab }
 #define CHOICE(tab, label, key, var, list) { label, key, UI_CHOICE, &var, 0, 0, 0, list, sizeof list / sizeof list[0], TRUE, NULL, tab }
@@ -2822,8 +2864,6 @@ static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_MATERIALS,"Roost Amount",L"roost_amount",g_cfg_roost_amount,0,250,5),
 	SLIDER(UI_TAB_MATERIALS,"Material Highlights",L"material_light",g_cfg_material_light,0,200,5),
 	SLIDER(UI_TAB_LIGHTING,"Ambient Light",L"ambient_light",g_cfg_ambient,0,200,5),
-    NAMED_CHOICE(UI_TAB_LIGHTING,"Shadow Debug",L"shadow_debug",g_cfg_shadow_debug,
-        g_shadow_debug_modes,g_shadow_debug_names,FALSE),
     SLIDER(UI_TAB_LIGHTING,"Shadow Darkness",L"shadow_darkness",g_cfg_shadow_darkness,0,100,5),
 	SLIDER(UI_TAB_LIGHTING,"Contact Shadows",L"contact_strength",g_cfg_contact,0,80,5),
 	SLIDER(UI_TAB_LIGHTING,"Ambient Occlusion",L"ao_strength",g_cfg_ao,0,200,5),
@@ -2840,11 +2880,10 @@ static const ui_item g_ui_items[] = {
 	SLIDER(UI_TAB_LOOK, "Contrast", L"contrast", g_cfg_contrast, 0, 100, 5),
 	SLIDER(UI_TAB_LOOK, "Split Toning", L"split_tone", g_cfg_split_tone, 0, 100, 5),
 	SLIDER(UI_TAB_LOOK, "Texture Sharpness", L"texture_sharpness", g_cfg_texture_sharpness, 0, 100, 5),
-	SLIDER(UI_TAB_LOOK, "Bloom", L"bloom", g_cfg_bloom, 0, 200, 5),
 
 	NAMED_CHOICE(UI_TAB_WEATHER, "Weather", L"weather", g_cfg_weather, g_weather_kinds, g_weather_names, FALSE),
 	SLIDER(UI_TAB_WEATHER, "Weather Strength", L"weather_amount", g_cfg_weather_amount, 0, 100, 5),
-	SLIDER(UI_TAB_WEATHER, "Wet Ground", L"wet", g_cfg_wet, 0, 100, 5),
+	SLIDER(UI_TAB_WEATHER,"Snow Depth",L"snow_depth",g_cfg_snow_depth,0,100,5),
 	SLIDER(UI_TAB_LIGHTING, "Sun Height (0 Track)", L"sun_height", g_cfg_sun_height, 0, 90, 1),
 	SLIDER(UI_TAB_LIGHTING, "Sun Turn", L"sun_turn", g_cfg_sun_turn, 0, 355, 5),
 
@@ -2872,15 +2911,21 @@ static void pack_section(wchar_t *section, size_t size)
 		swprintf_s(section, size, L"pack %s", g_cfg_pack);
 }
 
+BOOL ui_setting_visible(const ui_item *item)
+{
+    return item->value!=&g_cfg_snow_depth || g_cfg_weather==WEATHER_SNOW;
+}
+
 /* WritePrivateProfileString only touches its own line, so the file's comments stay. */
 void ui_setting_changed(const ui_item *item)
 {
+    if(item->value==&g_cfg_weather)g_reload_requested=TRUE;
 	wchar_t path[MAX_PATH], text[16], section[80] = L"mxs-shaders";
 
 
     if(item->value==&g_cfg_tire_tracks && !g_cfg_tire_tracks)marks_clear_compaction();
 	if(item->value==&g_cfg_sun_height||item->value==&g_cfg_sun_turn||item->value==&g_cfg_blur_enabled||item->value==&g_cfg_samples)pack_section(section,80);
-	if (item->kind == UI_SLIDER && item->tab != UI_TAB_MATERIALS && item->tab != UI_TAB_LIGHTING && item->tab != UI_TAB_DISPLAY)
+	if (item->kind == UI_SLIDER && item->value!=&g_cfg_snow_depth && item->tab != UI_TAB_MATERIALS && item->tab != UI_TAB_LIGHTING && item->tab != UI_TAB_DISPLAY)
 		pack_section(section, 80);
 	log_path(path, L"mxs-shaders.ini");
 	swprintf_s(text, 16, L"%d", *item->value);
@@ -3411,6 +3456,20 @@ static char *pack_shader(const char *role, GLenum type, const char *game_src)
 
 	sprintf_s(file, sizeof file, "%s.%s", role, type == GL_VERTEX_SHADER ? "vsh" : "fsh");
 	repl = pack_load(file);
+    if(repl && type==GL_FRAGMENT_SHADER && !strcmp(role,"terrain") && g_cfg_weather==WEATHER_SNOW){
+        const char define[]="#define FLICKS_SNOW_DEPTH_WRITE 1\n";
+        const char *line=strchr(repl,'\n');
+        if(line){
+            size_t prefix=(size_t)(line-repl)+1;
+            char *variant=malloc(strlen(repl)+sizeof define);
+            if(variant){
+                memcpy(variant,repl,prefix);
+                memcpy(variant+prefix,define,sizeof define-1);
+                strcpy(variant+prefix+sizeof define-1,repl+prefix);
+                free(repl);repl=variant;
+            }
+        }
+    }
 	if (repl || type != GL_VERTEX_SHADER)
 		return repl;
 
@@ -3625,11 +3684,14 @@ static void program_refresh(GLuint program)
 		g_loc_tire_coat[program]=real_glGetUniformLocation(program,"u_205_tire_coat");
 		g_loc_tire_soil[program]=real_glGetUniformLocation(program,"u_205_tire_soil");
         g_loc_body_dirt[program]=real_glGetUniformLocation(program,"u_205_body_dirt");
+        g_loc_helmet[program]=real_glGetUniformLocation(program,"u_205_helmet");
         g_loc_body_soil[program]=real_glGetUniformLocation(program,"u_205_body_soil");
         g_loc_tire_center[program]=real_glGetUniformLocation(program,"u_205_tire_center");
         g_loc_tire_radius[program]=real_glGetUniformLocation(program,"u_205_tire_radius");
 		g_loc_sprite_mode[program] = real_glGetUniformLocation(program, "u_sprite_mode");
 		g_loc_sun_view[program] = real_glGetUniformLocation(program, "u_sun_view");
+        g_loc_sky_look[program]=real_glGetUniformLocation(program,"u_sky_look");
+        g_loc_sky_sun[program]=real_glGetUniformLocation(program,"u_sky_sun");
 		g_loc_screen[program] = real_glGetUniformLocation(program, "u_screen");
 		g_loc_hdr[program] = real_glGetUniformLocation(program, "u_hdr");
 		g_loc_world_from_view[program] = real_glGetUniformLocation(program, "u_world_from_view");
@@ -3638,6 +3700,7 @@ static void program_refresh(GLuint program)
 		g_loc_weather_amount[program] = real_glGetUniformLocation(program, "u_weather_amount");
 		g_loc_wet[program] = real_glGetUniformLocation(program, "u_wet");
 		g_loc_weather_noise[program] = real_glGetUniformLocation(program, "u_weather_noise");
+        g_loc_snow_depth[program]=real_glGetUniformLocation(program,"u_snow_depth");
 
 		g_prog_role[program] = ROLE_NONE;
 		if (role && !strcmp(role, "terrain")) {
@@ -3799,15 +3862,33 @@ static int pack_int(const wchar_t *key, int fallback)
 	return value >= 0 ? value : fallback;
 }
 
+/* Migrate the short-lived amount slider once, preserving its OFF state. */
+static int edge_smoothing_setting(void)
+{
+    wchar_t path[MAX_PATH],value[32],*end;
+    int enabled=ini_int(L"edge_smoothing",1)!=0;
+    log_path(path,L"mxs-shaders.ini");
+    if(GetPrivateProfileStringW(L"mxs-shaders",L"edge_smoothing_amount",L"",value,32,path)){
+        long amount=wcstol(value,&end,10);
+        if(end!=value && !*end){
+            enabled=amount>0;
+            WritePrivateProfileStringW(L"mxs-shaders",L"edge_smoothing",enabled?L"1":L"0",path);
+            WritePrivateProfileStringW(L"mxs-shaders",L"edge_smoothing_amount",NULL,path);
+        }
+    }
+    return enabled;
+}
+
 /* Everything hot reload can pick up without rebuilding GL objects. */
 static void load_live_settings(void)
 {
+    int previousWeather=g_cfg_weather;
 	g_cfg_time_of_day = pack_int(L"time_of_day", 0);
 	int saved_look=ini_int(L"lighting_preset",0);
     g_cfg_lighting_look=max(0,min(saved_look,7));
 	g_cfg_bike_materials=ini_int(L"bike_materials",1)!=0;
 
-	g_cfg_fog = pack_int(L"fog", 10);
+	g_cfg_fog = pack_int(L"fog", 0);
 	g_cfg_blur_enabled=pack_int(L"motion_enabled",1)!=0;
 	g_cfg_shutter=max(0,min(200,pack_int(L"motion_strength",100)));
     g_cfg_blur_length=max(5,min(150,pack_int(L"motion_max_length",75)));
@@ -3815,7 +3896,7 @@ static void load_live_settings(void)
     int saved_samples=pack_int(L"motion_samples",12);
     g_cfg_samples=6;
     for(int i=0;i<sizeof g_blur_samples/sizeof g_blur_samples[0];i++)if(g_blur_samples[i]<=saved_samples)g_cfg_samples=g_blur_samples[i];
-	g_cfg_dof = max(0,min(200,pack_int(L"dof",0)));
+	g_cfg_dof = pack_int(L"dof", 0);
     g_cfg_tire_tracks=ini_int(L"tire_tracks",1)!=0;
     if(!g_cfg_tire_tracks)marks_clear_compaction();
 	g_cfg_actor_dirt=ini_int(L"actor_dirt",ini_int(L"tire_dirt",1))!=0;
@@ -3823,13 +3904,13 @@ static void load_live_settings(void)
 	g_cfg_roost_amount=max(0,min(250,ini_int(L"roost_amount",125)));
 	g_cfg_roost=ini_int(L"roost",1)!=0;
 	g_cfg_noise_reduction=max(0,min(100,ini_int(L"noise_reduction",50)));
-	g_cfg_edge_smoothing=ini_int(L"edge_smoothing",1)!=0;
+	g_cfg_edge_smoothing=edge_smoothing_setting();
 	g_cfg_material_light=max(0,min(ini_int(L"material_light",60),200));
-	g_cfg_ambient=max(0,min(ini_int(L"ambient_light",60),200));
+	g_cfg_ambient=max(0,min(ini_int(L"ambient_light",100),200));
 	g_cfg_ao=max(0,min(ini_int(L"ao_strength",100),200));
-    g_cfg_shadow_debug=max(0,min(2,ini_int(L"shadow_debug",0)));
+    g_cfg_shadow_debug=0; /* Removed diagnostic view; ignore legacy saved values. */
     g_cfg_stadium_preset=max(0,min(2,ini_int(L"stadium_preset",0)));
-    g_cfg_shadow_darkness=max(0,min(100,ini_int(L"shadow_darkness",75)));
+    g_cfg_shadow_darkness=max(0,min(100,ini_int(L"shadow_darkness",70)));
 	g_cfg_contact=max(0,min(ini_int(L"contact_strength",50),80));
 	g_cfg_ao_quality=max(0,min(ini_int(L"ao_quality",1),2));
 	g_cfg_ao_samples=max(12,min(ini_int(L"ao_samples",16),32));
@@ -3838,12 +3919,12 @@ static void load_live_settings(void)
 	g_cfg_contrast = pack_int(L"contrast", 12);
 	g_cfg_split_tone = pack_int(L"split_tone", 15);
 	g_cfg_texture_sharpness = pack_int(L"texture_sharpness", 100);
-	g_cfg_bloom = pack_int(L"bloom", 10);
 	g_cfg_sun_height = pack_int(L"sun_height", 0);
 	g_cfg_sun_turn = pack_int(L"sun_turn", 0);
 	g_cfg_weather = min(max(ini_int(L"weather", WEATHER_CLEAR), WEATHER_CLEAR), WEATHER_SNOW);
 	g_cfg_weather_amount = pack_int(L"weather_amount", 50);
-	g_cfg_wet = pack_int(L"wet", 0);
+    if((previousWeather==WEATHER_SNOW)!=(g_cfg_weather==WEATHER_SNOW))g_reload_requested=TRUE;
+	g_cfg_snow_depth=max(0,min(100,ini_int(L"snow_depth",35)));
 	g_cfg_shadow_riders=max(0,min(1000,ini_int(L"shadow_riders",10)));
 	g_cfg_hide_hud = ini_int(L"hide_hud", 0);
 	g_cfg_hide_cursor = ini_int(L"hide_cursor", 1);
@@ -4636,48 +4717,7 @@ static void load_config(void)
 	if (f) {
 		fclose(f);
 	} else if ((f = _wfopen(path, L"w")) != NULL) {
-		fputs("[mxs-shaders]\n"
-		      "gl_major=4\n"
-		      "gl_minor=6\n"
-		      "bike_materials=1\n"
-		      "tire_tracks=1\n"
-		      "actor_dirt=1\n"
-		      "actor_dirt_amount=100\n"
-		      "roost=1\n"
-		      "roost_amount=125\n"
-		      "material_light=60\n"
-		      "ambient_light=60\n"
-		      "shadow_debug=0\n"
-		      "shadow_darkness=75\n"
-		      "contact_strength=50\n"
-		      "ao_strength=100\n"
-		      "ao_samples=16\n"
-		      "ao_quality=1\n"
-		      "fog=10\n"
-		      "motion_enabled=1\n"
-		      "motion_strength=100\n"
-		      "motion_max_length=75\n"
-		      "motion_fallback_radius=20\n"
-		      "motion_samples=12\n"
-		      "dof=0\n"
-		      "saturation=104\n"
-		      "contrast=12\n"
-		      "split_tone=15\n"
-		      "texture_sharpness=100\n"
-		      "bloom=10\n"
-		      "weather=0\n"
-		      "weather_amount=50\n"
-		      "wet=0\n"
-		      "sun_height=0\n"
-		      "sun_turn=0\n"
-		      "noise_reduction=50\n"
-		      "edge_smoothing=1\n"
-		      "hide_hud=0\n"
-		      "hide_cursor=1\n"
-		      "shadow_size=4096\n"
-		      "msaa=4\n"
-		      "anisotropy=16\n"
-		      "borderless=1\n", f);
+		fputs("[mxs-shaders]\ngl_major=4\ngl_minor=6\nenabled=1\npack=default\nbike_materials=1\ntire_tracks=1\nactor_dirt=1\nactor_dirt_amount=100\nroost=1\nroost_amount=125\nmaterial_light=60\nambient_light=100\nshadow_darkness=70\ncontact_strength=50\nao_strength=100\nfog=0\nmotion_enabled=1\nmotion_strength=100\nmotion_max_length=75\nmotion_fallback_radius=20\ndof=0\nsaturation=104\ncontrast=12\nsplit_tone=15\ntexture_sharpness=100\nweather=0\nweather_amount=50\nsnow_depth=35\nsun_height=0\nsun_turn=0\ntime_of_day=0\nlighting_preset=0\nstadium_preset=0\nnoise_reduction=50\nedge_smoothing=1\nhide_hud=0\nhide_cursor=1\nborderless=1\nshadow_size=4096\nmsaa=4\nanisotropy=16\nao_samples=16\nao_quality=1\nmotion_samples=12\n",f);
 		fclose(f);
 	}
 

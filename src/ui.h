@@ -37,6 +37,7 @@ void ui_draw(HWND game, int w, int h, const wchar_t *pack, const ui_state *s);
 
 /* Implemented by hooks.c. */
 void ui_setting_changed(const ui_item *item);
+BOOL ui_setting_visible(const ui_item *item);
 void ui_pack_changed(const wchar_t *name);
 void ui_key_changed(int key);
 void ui_enabled_changed(int enabled);

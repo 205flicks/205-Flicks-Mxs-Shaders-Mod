@@ -14,6 +14,59 @@ static BOOL graphics_preset_directory(wchar_t path[MAX_PATH])
     return attributes!=INVALID_FILE_ATTRIBUTES && (attributes&FILE_ATTRIBUTE_DIRECTORY);
 }
 
+/* Imported values replace the saved values; never add to or multiply them. */
+static BOOL graphics_preset_load(const wchar_t *file)
+{
+    wchar_t path[MAX_PATH],section[80],value[32];
+    log_path(path,L"mxs-shaders.ini");
+    if(GetPrivateProfileIntW(L"205 Flicks",L"version",0,file)!=1)return FALSE;
+    for(unsigned i=0;i<sizeof g_ui_items/sizeof *g_ui_items;i++){
+        const ui_item *item=&g_ui_items[i];
+        wchar_t *end;
+        if(!GetPrivateProfileStringW(L"205 Flicks",item->key,L"",value,32,file)){
+            // Accept amount presets from test 2.2.45 as an on/off value.
+            if(item->value!=&g_cfg_edge_smoothing ||
+               !GetPrivateProfileStringW(L"205 Flicks",L"edge_smoothing_amount",L"",value,32,file))continue;
+            wchar_t *legacyEnd;
+            long legacy=wcstol(value,&legacyEnd,10);
+            if(legacyEnd==value||*legacyEnd)continue;
+            wcscpy_s(value,32,legacy>0?L"1":L"0");
+        }
+        long number=wcstol(value,&end,10);
+        if(end==value||*end)continue;
+        if(item->kind==UI_TOGGLE)number=number!=0;
+        else if(item->kind==UI_SLIDER)number=max(item->min,min(item->max,number));
+        else {
+            BOOL found=FALSE;
+            for(int j=0;j<item->choice_count;j++)if(number==item->choices[j])found=TRUE;
+            if(!found)continue;
+        }
+        wcscpy_s(section,80,L"mxs-shaders");
+        if(item->value==&g_cfg_sun_height||item->value==&g_cfg_sun_turn||item->value==&g_cfg_blur_enabled||item->value==&g_cfg_samples||
+           (item->kind==UI_SLIDER&&item->tab==UI_TAB_LOOK))
+            pack_section(section,80);
+        swprintf_s(value,32,L"%ld",number);
+        WritePrivateProfileStringW(section,item->key,value,path);
+    }
+    const wchar_t *lightingKeys[3]={L"lighting_preset",L"stadium_preset",L"time_of_day"};
+    const int lightingMax[3]={7,2,100};
+    for(int k=0;k<3;k++){
+        if(!GetPrivateProfileStringW(L"205 Flicks",lightingKeys[k],L"",value,32,file))continue;
+        wchar_t *end;long number=wcstol(value,&end,10);
+        if(end==value||*end||number<0||number>lightingMax[k])continue;
+        swprintf_s(value,32,L"%ld",number);
+        pack_section(section,80);
+        WritePrivateProfileStringW(k==2?section:L"mxs-shaders",lightingKeys[k],value,path);
+    }
+    load_live_settings();
+    // These controls take effect after restart but must show the newly imported values now.
+    g_cfg_msaa=ini_int(L"msaa",4);
+    g_cfg_aniso=ini_int(L"anisotropy",16);
+    g_cfg_shadow_size=ini_int(L"shadow_size",4096);
+    g_cfg_borderless=ini_int(L"borderless",1)!=0;
+    return TRUE;
+}
+
 void ui_graphics_file(HWND window,BOOL save)
 {
     typedef BOOL (WINAPI *dialog_fn)(LPOPENFILENAMEW);
@@ -54,29 +107,11 @@ void ui_graphics_file(HWND window,BOOL save)
             sprintf_s(line,sizeof line,"%ls=%d\r\n",g_ui_items[i].key,*g_ui_items[i].value);
             fputs(line,out);
         }
+        char lighting[128];
+        sprintf_s(lighting,sizeof lighting,"lighting_preset=%d\r\nstadium_preset=%d\r\ntime_of_day=%d\r\n",g_cfg_lighting_look,g_cfg_stadium_preset,g_cfg_time_of_day);
+        fputs(lighting,out);
         fclose(out);
         return;
     }
-    if(GetPrivateProfileIntW(L"205 Flicks",L"version",0,file)!=1)return;
-    for(unsigned i=0;i<sizeof g_ui_items/sizeof *g_ui_items;i++){
-        const ui_item *item=&g_ui_items[i];
-        wchar_t *end;
-        if(!GetPrivateProfileStringW(L"205 Flicks",item->key,L"",value,32,file))continue;
-        long number=wcstol(value,&end,10);
-        if(end==value||*end)continue;
-        if(item->kind==UI_TOGGLE)number=number!=0;
-        else if(item->kind==UI_SLIDER)number=max(item->min,min(item->max,number));
-        else {
-            BOOL found=FALSE;
-            for(int j=0;j<item->choice_count;j++)if(number==item->choices[j])found=TRUE;
-            if(!found)continue;
-        }
-        wcscpy_s(section,80,L"mxs-shaders");
-        if(item->value==&g_cfg_sun_height||item->value==&g_cfg_sun_turn||item->value==&g_cfg_blur_enabled||item->value==&g_cfg_samples||
-           (item->kind==UI_SLIDER&&item->tab==UI_TAB_LOOK))
-            pack_section(section,80);
-        swprintf_s(value,32,L"%ld",number);
-        WritePrivateProfileStringW(section,item->key,value,path);
-    }
-    load_live_settings();
+    graphics_preset_load(file);
 }

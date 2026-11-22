@@ -28,12 +28,14 @@ void ui_quality_preset(int level)
     wchar_t path[MAX_PATH],text[32];
     level=max(0,min(level,2));
     log_path(path,L"mxs-shaders.ini");
-    /* Presets do not touch depth of field or sun/weather/look values. */
+    /* Presets do not touch the user depth-of-field or sun/weather/look values. */
 #define SET(var,key,v) do{var=(v);swprintf_s(text,32,L"%d",var);WritePrivateProfileStringW(L"mxs-shaders",L##key,text,path);}while(0)
     SET(g_cfg_msaa,"msaa",level==2?2:level==0?4:8);
-    SET(g_cfg_aniso,"anisotropy",16);
+    SET(g_cfg_aniso,"anisotropy",level==2?8:16);
+    SET(g_cfg_shadow_size,"shadow_size",level==2?2048:level==0?4096:8192);
     SET(g_cfg_ao_samples,"ao_samples",level==2?12:level==0?16:32);
-    SET(g_cfg_ao_quality,"ao_quality",1);
+    SET(g_cfg_ao_quality,"ao_quality",level==1?2:1);
+    SET(g_cfg_samples,"motion_samples",level==2?6:12);
 #undef SET
-    log_msg("205 Flicks quality preset %d: MSAA changes after restart",level);
+    log_msg("205 Flicks quality preset %d: MSAA and shadow quality changes after restart",level);
 }

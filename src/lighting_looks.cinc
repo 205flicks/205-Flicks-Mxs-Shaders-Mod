@@ -1,11 +1,11 @@
 /* Artistic lighting looks; no astronomy/game-time/physics modification. */
 void ui_lighting_preset(int look)
 {
-    static const int preset[8][5]={
-        /* sun elevation, turn, haze, night blend, weather */
-        {0,0,0,0,0},{12,85,55,0,0},{65,160,10,0,0},
-        {14,240,35,0,0},{8,270,55,40,0},
-        {19,120,26,0,0},{0,0,12,100,0},{0,0,18,100,0}
+    static const int preset[8][3]={
+        /* sun elevation, turn, night blend */
+        {0,0,0},{12,85,0},{65,160,0},
+        {14,240,0},{8,270,40},
+        {19,120,0},{0,0,100},{0,0,100}
     };
     wchar_t path[MAX_PATH],section[80],value[32];const int *p;
     if(look<0 || (look>7 && look!=9 && look!=10))return;
@@ -19,12 +19,10 @@ void ui_lighting_preset(int look)
 #define LOOK(var,key,n) do{var=(n);swprintf_s(value,32,L"%d",var);WritePrivateProfileStringW(section,L##key,value,path);}while(0)
 #define GLOBAL(var,key,n) do{var=(n);swprintf_s(value,32,L"%d",var);WritePrivateProfileStringW(L"mxs-shaders",L##key,value,path);}while(0)
     LOOK(g_cfg_sun_height,"sun_height",p[0]);LOOK(g_cfg_sun_turn,"sun_turn",p[1]);
-    LOOK(g_cfg_fog,"fog",p[2]);LOOK(g_cfg_time_of_day,"time_of_day",p[3]);
-    GLOBAL(g_cfg_weather,"weather",p[4]);LOOK(g_cfg_weather_amount,"weather_amount",p[4]==1?85:20);
+    LOOK(g_cfg_time_of_day,"time_of_day",p[2]);
+    /* Lighting looks preserve haze, weather strength and other visual controls. */
     GLOBAL(g_cfg_lighting_look,"lighting_preset",look);
-    if(look==0)LOOK(g_cfg_wet,"wet",0);
+
 #undef LOOK
 #undef GLOBAL
 }
-
-/* Defines outdoor and stadium lighting presets. */

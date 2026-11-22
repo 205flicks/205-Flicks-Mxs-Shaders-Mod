@@ -55,13 +55,11 @@
 #define GL_COMPILE_STATUS 0x8B81
 #define GL_LINK_STATUS 0x8B82
 
-#define BLOOM_LEVELS 4
 
 /* Texture units above anything the game touches. */
 #define UNIT_COLOR 10
 #define UNIT_DEPTH 11
 #define UNIT_AO 12
-#define UNIT_BLOOM 13
 #define UNIT_SRC 14
 #define UNIT_EXPOSURE 15
 #define UNIT_SHAFTS 16
@@ -140,8 +138,8 @@ static blitframebuffer_fn gl_BlitFramebuffer;
 
 static BOOL g_ready;
 static GLuint g_vao;
-static GLuint g_prog_ao, g_prog_blur, g_prog_down, g_prog_up, g_prog_final;
-static GLint g_blur_dir, g_blur_texel, g_down_first, g_down_texel, g_up_texel;
+static GLuint g_prog_ao, g_prog_blur, g_prog_final;
+static GLint g_blur_dir, g_blur_texel;
 static GLint g_cached_ao_samples;
 static GLint g_cached_ao_ao_on;
 static GLint g_cached_ao_contact_on;
@@ -160,7 +158,6 @@ static int g_w, g_h;
 static int g_ao_div=2,g_ao_quality_last=1;
 static GLuint g_tex_color, g_tex_depth, g_fbo_resolve;
 static GLuint g_tex_ao[2], g_fbo_ao[2];
-static GLuint g_tex_bloom[BLOOM_LEVELS], g_fbo_bloom[BLOOM_LEVELS];
 static GLuint g_tex_exposure[2], g_fbo_exposure[2];
 static int g_exposure_write;
 static BOOL g_exposure_first;
@@ -177,8 +174,7 @@ static GLuint g_prog_shafts;
 static GLint g_shafts_a, g_shafts_b, g_shafts_fx, g_shafts_fy, g_shafts_matrix, g_shafts_on;
 static GLint g_final_rider_shadow_on,g_final_stadium,g_final_shadow_debug;
 static GLint g_final_shadow_darkness,g_final_shadow_on,g_final_shadow_matrix,g_final_shadow_near,g_final_shadow_offset;
-static GLint g_final_a, g_final_b, g_final_fx, g_final_fy, g_final_shafts_on, g_final_height, g_final_up, g_final_sun, g_final_fog, g_final_amount, g_final_night;
-static GLint g_final_bloom;
+static GLint g_final_a, g_final_b, g_final_fx, g_final_fy, g_final_shafts_on, g_final_height, g_final_up, g_final_sun, g_final_sky_sun, g_final_sky_look, g_final_fog, g_final_amount, g_final_night;
 
 /* The weather uniforms common.glsl declares, in the post programs that use them. */
 typedef struct {
@@ -249,7 +245,6 @@ static GLuint program(const char *file)
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_color"), UNIT_COLOR);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_depth"), UNIT_DEPTH);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_ao"), UNIT_AO);
-	gl_Uniform1i(gl_GetUniformLocation(p, "u_bloom"), UNIT_BLOOM);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_src"), UNIT_SRC);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_exposure"), UNIT_EXPOSURE);
 	gl_Uniform1i(gl_GetUniformLocation(p, "u_shafts"), UNIT_SHAFTS);
@@ -341,20 +336,18 @@ void post_init(PROC (WINAPI *get_proc)(LPCSTR))
 /* All or nothing: a broken stage keeps every current program running. */
 static BOOL load_programs(void)
 {
-	GLuint fresh[8];
+	GLuint fresh[6];
 	int i;
 
 	fresh[0] = program("post_ao.fsh");
 	fresh[1] = program("post_ao_blur.fsh");
-	fresh[2] = program("post_bloom_down.fsh");
-	fresh[3] = program("post_bloom_up.fsh");
-	fresh[4] = program("post_final.fsh");
-	fresh[5] = program("post_exposure.fsh");
-	fresh[6] = program("post_shafts.fsh");
-	fresh[7] = program("post_lens.fsh");
+	fresh[2] = program("post_final.fsh");
+	fresh[3] = program("post_exposure.fsh");
+	fresh[4] = program("post_shafts.fsh");
+	fresh[5] = program("post_lens.fsh");
 
-	if (!fresh[0] || !fresh[1] || !fresh[2] || !fresh[3] || !fresh[4] || !fresh[5] || !fresh[6] || !fresh[7]) {
-		for (i = 0; i < 8; i++)
+	if (!fresh[0] || !fresh[1] || !fresh[2] || !fresh[3] || !fresh[4] || !fresh[5]) {
+		for (i = 0; i < 6; i++)
 			if (fresh[i])
 				gl_DeleteProgram(fresh[i]);
 		return FALSE;
@@ -363,14 +356,12 @@ static BOOL load_programs(void)
 	if (g_prog_ao) {
 		gl_DeleteProgram(g_prog_ao);
 		gl_DeleteProgram(g_prog_blur);
-		gl_DeleteProgram(g_prog_down);
-		gl_DeleteProgram(g_prog_up);
 		gl_DeleteProgram(g_prog_final);
 		gl_DeleteProgram(g_prog_exposure);
 		gl_DeleteProgram(g_prog_shafts);
 		gl_DeleteProgram(g_prog_lens);
 	}
-	g_prog_lens = fresh[7];
+	g_prog_lens = fresh[5];
 	g_lens_a = gl_GetUniformLocation(g_prog_lens, "u_proj_a");
 	g_lens_b = gl_GetUniformLocation(g_prog_lens, "u_proj_b");
 	g_lens_fx = gl_GetUniformLocation(g_prog_lens, "u_fx");
@@ -389,22 +380,20 @@ static BOOL load_programs(void)
     g_lens_lighting_look=gl_GetUniformLocation(g_prog_lens,"u_lighting_look");
 	g_lens_night = gl_GetUniformLocation(g_prog_lens, "u_night");
 	weather_find(&g_lens_weather, g_prog_lens);
-	g_prog_shafts = fresh[6];
+	g_prog_shafts = fresh[4];
 	g_shafts_a = gl_GetUniformLocation(g_prog_shafts, "u_proj_a");
 	g_shafts_b = gl_GetUniformLocation(g_prog_shafts, "u_proj_b");
 	g_shafts_fx = gl_GetUniformLocation(g_prog_shafts, "u_fx");
 	g_shafts_fy = gl_GetUniformLocation(g_prog_shafts, "u_fy");
 	g_shafts_matrix = gl_GetUniformLocation(g_prog_shafts, "u_shadow_matrix");
 	g_shafts_on = gl_GetUniformLocation(g_prog_shafts, "u_shadow_on");
-	g_prog_exposure = fresh[5];
+	g_prog_exposure = fresh[3];
 	g_exposure_first_loc = gl_GetUniformLocation(g_prog_exposure, "u_first");
 	g_exposure_a = gl_GetUniformLocation(g_prog_exposure, "u_proj_a");
 	g_exposure_b = gl_GetUniformLocation(g_prog_exposure, "u_proj_b");
 	g_prog_ao = fresh[0];
 	g_prog_blur = fresh[1];
-	g_prog_down = fresh[2];
-	g_prog_up = fresh[3];
-	g_prog_final = fresh[4];
+	g_prog_final = fresh[2];
 	g_cached_final_noise_reduction=gl_GetUniformLocation(g_prog_final,"u_noise_reduction");
 	g_cached_final_edge_smoothing=gl_GetUniformLocation(g_prog_final,"u_edge_smoothing");
 	g_cached_final_contact_strength=gl_GetUniformLocation(g_prog_final,"u_contact_strength");
@@ -435,11 +424,12 @@ static BOOL load_programs(void)
 	g_final_height = gl_GetUniformLocation(g_prog_final, "u_camera_height");
 	g_final_up = gl_GetUniformLocation(g_prog_final, "u_up");
 	g_final_sun = gl_GetUniformLocation(g_prog_final, "u_sun");
+    g_final_sky_sun=gl_GetUniformLocation(g_prog_final,"u_sky_sun");
+    g_final_sky_look=gl_GetUniformLocation(g_prog_final,"u_sky_look");
 	g_final_fog = gl_GetUniformLocation(g_prog_final, "u_fog_color");
 	g_final_amount = gl_GetUniformLocation(g_prog_final, "u_fog_amount");
 	g_final_night = gl_GetUniformLocation(g_prog_final, "u_night");
 	g_final_shafts_on = gl_GetUniformLocation(g_prog_final, "u_205_shafts_on");
-	g_final_bloom = gl_GetUniformLocation(g_prog_final, "u_bloom_amount");
 	weather_find(&g_final_weather, g_prog_final);
 
 	g_ao_texel = gl_GetUniformLocation(g_prog_ao, "u_texel");
@@ -451,9 +441,6 @@ static BOOL load_programs(void)
 	g_ao_night = gl_GetUniformLocation(g_prog_ao, "u_night");
 	g_blur_dir = gl_GetUniformLocation(g_prog_blur, "u_dir");
 	g_blur_texel = gl_GetUniformLocation(g_prog_blur, "u_texel");
-	g_down_first = gl_GetUniformLocation(g_prog_down, "u_first");
-	g_down_texel = gl_GetUniformLocation(g_prog_down, "u_texel");
-	g_up_texel = gl_GetUniformLocation(g_prog_up, "u_texel");
 	marks_load(); /* The terrain renderer also works without the mark atlas. */
 	return TRUE;
 }
@@ -496,7 +483,6 @@ static void release_targets(void)
 		return;
 	gl_DeleteFramebuffers(1, &g_fbo_resolve);
 	gl_DeleteFramebuffers(2, g_fbo_ao);
-	gl_DeleteFramebuffers(BLOOM_LEVELS, g_fbo_bloom);
 	gl_DeleteFramebuffers(2, g_fbo_exposure);
 	gl_DeleteTextures(2, g_tex_exposure);
 	gl_DeleteFramebuffers(2, g_fbo_shafts);
@@ -506,7 +492,6 @@ static void release_targets(void)
 	gl_DeleteTextures(1, &g_tex_color);
 	gl_DeleteTextures(1, &g_tex_depth);
 	gl_DeleteTextures(2, g_tex_ao);
-	gl_DeleteTextures(BLOOM_LEVELS, g_tex_bloom);
 	g_fbo_resolve = 0;
 }
 
@@ -539,10 +524,7 @@ static BOOL create_targets(int w, int h)
 		g_tex_shafts[i] = new_texture(GL_RG8, GL_RG, GL_UNSIGNED_BYTE, w / 2, h / 2, GL_LINEAR);
 		g_fbo_shafts[i] = new_fbo(g_tex_shafts[i]);
 	}
-	for (i = 0; i < BLOOM_LEVELS; i++) {
-		g_tex_bloom[i] = new_texture(GL_R11F_G11F_B10F, GL_RGB, GL_FLOAT, w >> (i + 1), h >> (i + 1), GL_LINEAR);
-		g_fbo_bloom[i] = new_fbo(g_tex_bloom[i]);
-	}
+
 	for (i = 0; i < 2; i++) {
 		g_tex_exposure[i] = new_texture(GL_RGBA16F, GL_RGBA, GL_FLOAT, 1, 1, GL_NEAREST);
 		g_fbo_exposure[i] = new_fbo(g_tex_exposure[i]);
@@ -629,37 +611,7 @@ static void pass_shafts(const post_state *s)
 	fullscreen();
 }
 
-static void pass_bloom(void)
-{
-	int i;
 
-	gl_UseProgram(g_prog_down);
-	for (i = 0; i < BLOOM_LEVELS; i++) {
-		int w = g_w >> (i + 1), h = g_h >> (i + 1);
-
-		gl_BindFramebuffer(GL_FRAMEBUFFER, g_fbo_bloom[i]);
-		gl_Viewport(0, 0, w, h);
-		bind_unit(UNIT_SRC, i ? g_tex_bloom[i - 1] : g_tex_color);
-		gl_Uniform1i(g_down_first, i == 0);
-		gl_Uniform2f(g_down_texel, 1.0f / w, 1.0f / h);
-		fullscreen();
-	}
-
-	/* Back up the chain, each level added onto the next larger one. */
-	gl_UseProgram(g_prog_up);
-	gl_Enable(GL_BLEND);
-	gl_BlendFunc(GL_ONE, GL_ONE);
-	for (i = BLOOM_LEVELS - 2; i >= 0; i--) {
-		int w = g_w >> (i + 1), h = g_h >> (i + 1);
-
-		gl_BindFramebuffer(GL_FRAMEBUFFER, g_fbo_bloom[i]);
-		gl_Viewport(0, 0, w, h);
-		bind_unit(UNIT_SRC, g_tex_bloom[i + 1]);
-		gl_Uniform2f(g_up_texel, 1.0f / w, 1.0f / h);
-		fullscreen();
-	}
-	gl_Disable(GL_BLEND);
-}
 
 /* Each frame eases last frame's value, so it needs two targets to swap between. */
 static void pass_exposure(const post_state *s)
@@ -718,18 +670,15 @@ void post_run(const post_state *s)
 	bind_unit(UNIT_DEPTH, g_tex_depth);
 
     BOOL use_ao=s->ao_quality>0&&s->ao_amount>0.0f;
-    BOOL use_contact=s->contact_amount>0.0f&&s->night<1.0f;
+    BOOL use_contact=s->contact_amount>0.0f;
     if(use_ao||use_contact)pass_ao(s);
     BOOL use_shafts=s->stadium_lighting!=2 && s->night<1.0f&&s->shadow_matrix!=NULL;
     // With no shadow receiver, the stock shaft shader returns zero coverage.
     // Keep running custom packs that do not expose the bypass uniform.
     if(s->night<1.0f&&(use_shafts||g_final_shafts_on<0))pass_shafts(s);
-	if (s->bloom > 0.0f)
-		pass_bloom();
 	pass_exposure(s);
 
 	bind_unit(UNIT_AO, g_tex_ao[0]);
-	bind_unit(UNIT_BLOOM, g_tex_bloom[0]);
 	bind_unit(UNIT_SHAFTS, g_tex_shafts[0]);
 	gl_BindFramebuffer(GL_FRAMEBUFFER, g_fbo_comp);
 	gl_Viewport(0, 0, g_w, g_h);
@@ -744,8 +693,9 @@ void post_run(const post_state *s)
 	gl_Uniform1i(g_final_shafts_on,use_shafts);
 	gl_Uniform3f(g_final_up, s->view_up[0], s->view_up[1], s->view_up[2]);
 	gl_Uniform3f(g_final_sun, s->sun_view[0], s->sun_view[1], s->sun_view[2]);
+    gl_Uniform3f(g_final_sky_sun,s->sky_sun[0],s->sky_sun[1],s->sky_sun[2]);
+    gl_Uniform1i(g_final_sky_look,s->lighting_look);
 	gl_Uniform3f(g_final_fog, s->fog_color[0], s->fog_color[1], s->fog_color[2]);
-	gl_Uniform1f(g_final_bloom, s->bloom);
 	gl_Uniform1f(g_cached_final_205_moon,s->moon);
 	gl_Uniform1f(g_cached_final_205_stars,s->stars);
 	gl_Uniform1f(g_cached_final_ao_strength,use_ao?s->ao_amount:0.0f);
@@ -766,6 +716,7 @@ void post_run(const post_state *s)
 	fullscreen();
 
 	gl_BindFramebuffer(GL_FRAMEBUFFER, s->scene_fbo);
+    gl_Viewport(0,0,g_w,g_h);
 	bind_unit(UNIT_SRC, g_tex_comp);
 	gl_UseProgram(g_prog_lens);
 	gl_Uniform1f(g_lens_a, s->projection[10]);
@@ -805,6 +756,9 @@ restore:
 	if (scissor)
 		gl_Enable(GL_SCISSOR_TEST);
 }
+
+
+/* Late color/depth handoff: all completed world draws, no extra tonemapping. */
 
 
 void post_context_lost(void)

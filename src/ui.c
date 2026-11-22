@@ -574,7 +574,7 @@ static const char *setting_help(const wchar_t *key)
         {L"roost","Toggles the dust and mud thrown behind the rear wheel."},
         {L"roost_amount","Changes the size and visibility of dust and mud."},
         {L"material_light","Changes the brightness of material highlights."},
-        {L"ambient_light","Adjusts the fill light in areas without direct sun."},
+        {L"ambient_light","Fill light in shade. Balanced uses 100. Zero removes fill light and can make shadows very dark. Updates preserve saved settings; loading a preset replaces its saved values."},
         {L"tire_tracks","Shades separate front and rear tire grooves on the track surface."},
         {L"motion_enabled","Blurs passing scenery while the nearby rider and bike stay sharp."},
         {L"motion_strength","Higher strength stretches moving scenery more."},
@@ -587,16 +587,14 @@ static const char *setting_help(const wchar_t *key)
         {L"ao_samples","More samples can smooth ambient shadows at an FPS cost."},
         {L"ao_quality","Controls the resolution of ambient occlusion."},
         {L"fog","Changes the amount of haze over distant scenery."},
-        {L"dof","Controls the strength of the standard depth of field. Zero turns it off."},
+        {L"dof","Blurs scenery outside the camera's focus range."},
         {L"saturation","Changes how vivid the colors look."},
         {L"contrast","Changes the separation between dark and bright tones."},
         {L"split_tone","Tints shadows cooler and highlights warmer."},
         {L"texture_sharpness","Makes texture detail sharper and can increase shimmer."},
-        {L"bloom","Adds a soft glow around bright areas."},
-        {L"shadow_debug","Shows the scene or rider shadow sampled on visible surfaces. Magenta means the selected map is unavailable."},
-        {L"weather","Chooses clear skies, clouds, rain, storm or snow."},
+        {L"weather","Chooses clear/cloudy skies, daytime rain with lightning, nighttime rain with lightning and moonlight, or snow without lightning. Rain controls ground wetness."},
         {L"weather_amount","Changes the intensity of the selected weather."},
-        {L"wet","Changes how wet and reflective the ground looks."},
+        {L"snow_depth","Raises a visual snow layer. Tire Tracks cut through it to the original dirt. Riding physics follow the original terrain."},
         {L"sun_height","Changes the sun's elevation. Zero uses the track's sun."},
         {L"sun_turn","Rotates the sun's direction around the track."},
         {L"noise_reduction","Softens fine visual noise. Zero turns it off."},
@@ -801,7 +799,7 @@ static void panel(HWND game,int w,int h,const wchar_t *pack,const ui_state *s)
     float mx,my;BOOL down=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0,click=down&&!g_mouse_was_down;
     POINT p;int i,t,order[UI_TABS]={UI_TAB_LOOK,UI_TAB_MATERIALS,UI_TAB_LIGHTING,UI_TAB_WEATHER,UI_TAB_DISPLAY};
     const color panel_bg={0.035f,0.035f,0.035f,0.985f},muted={0.52f,0.52f,0.52f,1},line={0.16f,0.16f,0.16f,1};
-    const char *description="Color, atmosphere and camera effects.";
+    const char *description="Color, atmosphere and depth of field.";
     (void)pack;
     GetCursorPos(&p);ScreenToClient(game,&p);mx=(float)p.x;my=(float)p.y;
 #ifdef FLICKS_PREVIEW_UI
@@ -879,7 +877,7 @@ static void panel(HWND game,int w,int h,const wchar_t *pack,const ui_state *s)
         float lx=x+(side-lw)*0.5f,ly=y+(head-lh)*0.5f;
         quad_uv(lx,ly,lx+lw,ly+lh,2,0,3,1,(color){1,1,1,1});
     }
-    small_text(main_x,y+head*0.30f,34,"Private 205 Flicks MXS Shaders Mod",TEXT_LIGHT,1.15f);
+    small_text(main_x,y+head*0.30f,34,"205 Flicks MXS Shaders Mod V3",TEXT_LIGHT,1.15f);
     small_text(main_x,y+head*0.78f,22,"NATIVE GRAPHICS",muted,0.72f);
     /* A compact close control, independent of the game's menu styling. */
     if(inside(mx,my,x+pw-42,y+8,34,32)){
@@ -896,7 +894,7 @@ static void panel(HWND game,int w,int h,const wchar_t *pack,const ui_state *s)
     }
     if(g_tab==UI_TAB_MATERIALS)description="Rough soil, controlled sheen and richer material highlights.";
     if(g_tab==UI_TAB_LIGHTING)description="Choose a lighting preset for the track and sky.";
-    if(g_tab==UI_TAB_WEATHER)description="Sun direction, time of day and surface weather.";
+    if(g_tab==UI_TAB_WEATHER)description="Weather skies, rain-only wet ground, and snow coverage.";
     if(g_tab==UI_TAB_DISPLAY){
         description="Anti-aliasing, shadows, textures and display.";
         row=min(row,(ph-head-249.0f)/9.0f-3.0f);
@@ -930,7 +928,7 @@ static void panel(HWND game,int w,int h,const wchar_t *pack,const ui_state *s)
         }
         content_y+=4*(row+3);
     }
-    for(i=0;i<g_item_count;i++)if(g_items[i].tab==g_tab){
+    for(i=0;i<g_item_count;i++)if(g_items[i].tab==g_tab && ui_setting_visible(&g_items[i])){
         item_row(i,main_x,content_y,label_w,value_w,row,mx,my,down,click);
         content_y+=row+3;
     }

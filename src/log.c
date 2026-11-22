@@ -11,7 +11,7 @@ void log_init(void)
 
 	if (!GetEnvironmentVariableW(L"LOCALAPPDATA", g_dir, MAX_PATH - 64))
 		GetTempPathW(MAX_PATH - 64, g_dir);
-	wcscat_s(g_dir, MAX_PATH, L"\\205 Flicks MXS Shaders V2");
+	wcscat_s(g_dir, MAX_PATH, L"\\205 Flicks MXS Shaders V3");
 	CreateDirectoryW(g_dir, NULL);
 
 	swprintf_s(sub, MAX_PATH, L"%s\\shaders", g_dir);
